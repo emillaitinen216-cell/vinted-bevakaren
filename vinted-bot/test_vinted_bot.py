@@ -340,15 +340,18 @@ class HashtagTests(unittest.TestCase):
 class NamedClient(FakeClient):
     """Returnerar en ny annons per anrop och kan nekas för en viss sökning."""
 
-    def __init__(self, blocked=None):
+    def __init__(self, blocked=None, block_times=None):
         super().__init__()
         self.searched, self.blocked, self.next_id = [], blocked, 1000
+        self.block_times = block_times  # None = alltid
 
     def fetch(self, search, page=1, price_cap=True):
         if page > 1:
             return []   # bara en sida per sökning
         self.searched.append(search.name)
-        if search.name == self.blocked:
+        if search.name == self.blocked and self.block_times != 0:
+            if self.block_times:
+                self.block_times -= 1
             raise vb.Blocked("HTTP 403")
         self.next_id += 1
         return [item(id=self.next_id)]
@@ -389,6 +392,35 @@ class TimeBudgetTests(unittest.TestCase):
         with self.assertRaises(vb.Blocked):
             bot.run_cycle()
         self.assertEqual(self.store.get_setting("next_search"), "1")
+
+    def test_waits_once_when_blocked_and_budget_allows(self):
+        client = NamedClient(blocked="B", block_times=1)
+        bot = vb.Bot(self.cfg, self.searches, client, self.store, [], time_budget=400)
+        bot.block_cooldown = 75
+        with mock.patch.object(vb.time, "sleep") as sleep, self.assertLogs("vinted-bot", "INFO") as logs:
+            bot.run_cycle()
+        self.assertEqual(client.searched, ["A", "B", "B", "C", "D"])   # B igen efter pausen
+        self.assertIn(mock.call(75), sleep.call_args_list)
+        self.assertIn("väntar 75 s", "\n".join(logs.output))
+
+    def test_gives_up_when_blocked_without_time_to_wait(self):
+        client = NamedClient(blocked="B")
+        bot = vb.Bot(self.cfg, self.searches, client, self.store, [], time_budget=100)
+        bot.block_cooldown = 75
+        with mock.patch.object(vb.time, "sleep"), self.assertRaises(vb.Blocked):
+            bot.run_cycle()
+        self.assertEqual(client.searched, ["A", "B"])
+        self.assertEqual(self.store.get_setting("next_search"), "1")
+
+    def test_waits_at_most_twice_per_run(self):
+        client = NamedClient(blocked="B")
+        bot = vb.Bot(self.cfg, self.searches, client, self.store, [], time_budget=1000)
+        bot.block_cooldown = 75
+        with mock.patch.object(vb.time, "sleep") as sleep, self.assertRaises(vb.Blocked), \
+                self.assertLogs("vinted-bot", "INFO"):
+            bot.run_cycle()
+        self.assertEqual(client.searched, ["A", "B", "B", "B"])
+        self.assertEqual(sleep.call_args_list.count(mock.call(75)), 2)
 
     def test_without_budget_runs_everything_in_order(self):
         client = NamedClient()

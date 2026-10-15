@@ -48,8 +48,9 @@ jobs:
 
       - name: Sök på Vinted och skicka notiser
         # --tyst: loggarna i ett publikt repo syns för alla, så inga fynd eller chatt-id:n skrivs ut.
-        # Inga nya sökningar efter sju minuter; resten tas först i nästa körning.
-        run: python vinted_bot.py --once --tyst --paus 2 4 --max-tid 420
+        # Lugnt tempo (Vinted spärrar efter ett femtontal snabba anrop) och inga nya sökningar
+        # efter sju minuter; resten tas först i nästa körning.
+        run: python vinted_bot.py --once --tyst --paus 4 6 --max-tid 420
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

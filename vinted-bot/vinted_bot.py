@@ -1241,6 +1241,10 @@ class Bot:
         # hittades), så länge någon kanal är inställd.
         self.queue_undelivered = queue_undelivered
         self.shown: set[int] = set()
+        # Spärrar Vinted under en körning med tidsgräns: vänta så här länge och fortsätt (högst
+        # block_pauses gånger per varv) i stället för att avsluta – om tidsgränsen räcker till det.
+        self.block_cooldown = 0.0
+        self.block_pauses = 2
 
     def _pause(self) -> None:
         low, high = self.cfg["delay_between_searches"]
@@ -1321,10 +1325,23 @@ class Bot:
             if self._deliver(msg):
                 self.store.delete_pending(pid)  # annars nytt försök nästa körning (högst ett dygn)
 
+    def _run_search_or_wait(self, search: Search, started: float) -> int:
+        while True:
+            try:
+                return self.run_search(search)
+            except Blocked as e:
+                left = self.time_budget - (time.monotonic() - started) if self.time_budget else 0.0
+                if not self.block_cooldown or self._pauses_left <= 0 or left < self.block_cooldown + 30:
+                    raise
+                self._pauses_left -= 1
+                log.info("Vinted nekade anropet (%s) – väntar %g s och fortsätter.", e, self.block_cooldown)
+                time.sleep(self.block_cooldown)
+
     def run_cycle(self) -> int:
         """Ett varv genom sökningarna. Med tidsgräns avbryts varvet när tiden är slut, och nästa
         varv börjar där det här slutade – så att varje körning i molnet ryms inom en debiterad minut."""
         started = time.monotonic()  # tidsgränsen räknar även in fynd som skickas om
+        self._pauses_left = self.block_pauses
         try:
             self.flush_pending()
         except Exception:
@@ -1344,7 +1361,7 @@ class Bot:
                     self._pause()
                 done = i + 1
                 try:
-                    found = self.run_search(search)
+                    found = self._run_search_or_wait(search, started)
                 except Blocked:
                     done = i  # försök med samma sökning först nästa gång
                     raise
@@ -1520,6 +1537,8 @@ def main(argv: list[str] | None = None) -> int:
         [((cfg.get("notify") or {}).get("telegram") or {}).get("bot_token"),
          (cfg.get("notify") or {}).get("discord_webhook"), (cfg.get("notify") or {}).get("ntfy_topic")])
     bot = Bot(cfg, searches, client, store, notifiers, time_budget=args.time_budget, queue_undelivered=configured)
+    if args.once:
+        bot.block_cooldown = 75.0  # bara om tidsgränsen räcker, se Bot._run_search_or_wait
     try:
         if args.once:
             log.info("Klart: %d fynd.", bot.run_cycle())
