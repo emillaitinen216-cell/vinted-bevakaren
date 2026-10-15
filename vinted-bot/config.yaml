@@ -164,6 +164,7 @@ searches:
       Diesel: 400
       Replay: 350
       Lee: 350
+      Lee Cooper: ignorera  # billigare märke, matchar annars "Lee"
     premium_keywords:
       "517": 100            # Levi's 517 bootcut
       zatiny: 200
@@ -184,6 +185,8 @@ searches:
       Filson:              {resale: 1300, max_price: 700}
       Engineered Garments: {resale: 1300, max_price: 700}
       Ralph Lauren:        {resale: 1000, max_price: 550}
+      Lauren Ralph Lauren: ignorera   # billigare sidolinjer
+      Chaps: ignorera
       Our Legacy:          {resale: 1000, max_price: 550}
       Acne Studios:        {resale: 1000, max_price: 550}
       Barbour:             {resale: 900,  max_price: 550}
@@ -216,6 +219,8 @@ searches:
     min_profit: 250
     brands:
       Ralph Lauren: 1000    # median ~1 200 kr
+      Lauren Ralph Lauren: ignorera
+      Chaps: ignorera
       Carhartt: 800
       Schott: 800
       Alpha Industries: 650
@@ -670,10 +675,11 @@ searches:
     min_profit: 320
     suspicious_below: 250   # kopior är vanliga – kolla tygets tjocklek och gummilogan
     brands:
-      Essentials: 560       # median ~620 kr, undre kvartil ~410 kr
-      Amazon Essentials: ignorera
-      Outdoor Essentials: ignorera
-      Basic Essentials: ignorera
+      # Märket heter oftast bara "Essentials". exact: true gör att t.ex. "Nike Sport Essentials"
+      # eller "Amazon Essentials" inte räknas.
+      Essentials: {resale: 560, exact: true}   # median ~620 kr, undre kvartil ~410 kr
+      Fear of God Essentials: 560
+      Fear of God: 560
 
   - name: Our Legacy
     query: our legacy

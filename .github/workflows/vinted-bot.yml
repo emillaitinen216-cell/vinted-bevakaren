@@ -1,34 +1,44 @@
-# Kör Vinted-bevakaren i molnet var tionde minut – ingen egen dator behövs.
+# Kör Vinted-bevakaren i molnet var tionde minut, dygnet runt – ingen egen dator behövs.
 #
 # Engångsinställning: lägg in din Telegram-token som hemlighet med namnet
 # TELEGRAM_BOT_TOKEN (Settings › Secrets and variables › Actions › New repository
-# secret) och skriv "hej" till din bot. Chat-id hittas automatiskt.
+# secret), skriv "hej" till din bot och tryck Run workflow under fliken Actions.
 # Se vinted-bot/README.md, avsnittet "Kör i molnet".
+#
+# GitHubs schema (cron) startar inte på alla konton – på det här kontot har det
+# aldrig startat. Därför startar varje körning själv nästa, tio minuter efter att
+# den började.
+#   Stoppa boten:  Actions › Vinted-bevakaren › ⋯ › Disable workflow
+#   Starta igen:   Enable workflow och sedan Run workflow
 name: Vinted-bevakaren
 
 on:
-  schedule:
-    # Var tionde minut (minut 3, 13, 23 …). Det här repot ska vara PUBLIKT: då är
-    # Actions-minuterna obegränsade. I ett privat repo räcker gratisminuterna
-    # (2 000 i månaden) bara till "7,37 * * * *" med --max-tid 30 – tar de slut
-    # stoppas ALLA Actions-körningar på kontot till nästa månad.
-    - cron: "3-59/10 * * * *"
-  workflow_dispatch: # knappen "Run workflow" under fliken Actions
+  workflow_dispatch: # knappen "Run workflow" under fliken Actions, och nästa körning i kedjan
 
 concurrency:
   group: vinted-bot
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: write # för att starta nästa körning och se vilka databaser som finns sparade
+
 jobs:
   bevaka:
-    # Schemat körs bara medan repot är publikt. Ett överhoppat jobb kostar inga minuter.
-    if: github.event_name != 'schedule' || !github.event.repository.private
+    # Bara i ett publikt repo, där Actions-minuterna är obegränsade. Ett privat repo har
+    # 2 000 gratisminuter i månaden: var tionde minut gör slut på dem på ett par dygn, och
+    # då stoppas ALLA Actions-körningar på kontot till nästa månad.
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: vinted-bot
     steps:
+      - name: Kom ihåg starttiden
+        working-directory: ${{ github.workspace }}
+        run: echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -39,14 +49,36 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      # Sedda annonser sparas mellan körningarna så att bara nya annonser ger notis.
+      # Sedda annonser och Telegram-chatten sparas mellan körningarna.
       - uses: actions/cache/restore@v4
+        id: db
         with:
           path: vinted-bot/vinted_bot.db
-          key: vinted-db-${{ github.run_id }}
+          key: vinted-db-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: vinted-db-
 
+      - name: Kolla att databasen från förra körningen kom med
+        id: check
+        if: steps.db.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Finns det sparade databaser men ingen gick att hämta krånglar GitHubs cache just nu.
+          # Hoppa då över den här körningen hellre än att börja om från noll – då skulle boten
+          # glömma vilken Telegram-chatt fynden ska till. Går det inte ens att kolla: hoppa över.
+          if ! keys=$(gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key vinted-db- \
+                        --limit 1 --json key --jq '.[].key'); then
+            echo "::warning::Kunde inte kolla GitHubs cache – hoppar över den här körningen."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$keys" ]; then
+            echo "::warning::Kunde inte hämta databasen från förra körningen – hoppar över den här körningen."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Sök på Vinted och skicka notiser
+        id: bot
+        if: steps.check.outputs.skip != 'true'
+        timeout-minutes: 13 # hänger något avbryts bara det här steget, och kedjan går vidare
         # --tyst: loggarna i ett publikt repo syns för alla, så inga fynd eller chatt-id:n skrivs ut.
         # Lugnt tempo (Vinted spärrar efter ett femtontal snabba anrop) och inga nya sökningar
         # efter sju minuter; resten tas först i nästa körning.
@@ -58,7 +90,30 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
       - uses: actions/cache/save@v4
-        if: always()
+        if: always() && (steps.bot.outcome == 'success' || steps.bot.outcome == 'failure')
         with:
           path: vinted-bot/vinted_bot.db
-          key: vinted-db-${{ github.run_id }}
+          key: vinted-db-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Starta nästa körning om tio minuter
+        # Även om något steg ovan misslyckades, men inte om körningen avbröts för hand.
+        if: success() || failure()
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          started=${STARTED:-$(date +%s)}
+          wait=$(( started + 600 - $(date +%s) ))
+          if [ "$wait" -gt 0 ]; then sleep "$wait"; fi
+          # Upp till åtta minuters försök, ifall GitHub krånglar en stund.
+          for try in $(seq 1 16); do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/vinted-bot.yml" --jq .state || echo okänt)
+            if [ "$state" != "active" ] && [ "$state" != "okänt" ]; then
+              echo "Workflowet är avstängt ($state) – startar ingen ny körning."
+              exit 0
+            fi
+            gh workflow run vinted-bot.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" && exit 0
+            sleep 30
+          done
+          echo "::error::Kunde inte starta nästa körning. Tryck Run workflow under fliken Actions."
+          exit 1

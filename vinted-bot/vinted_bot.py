@@ -118,6 +118,16 @@ def hashtag(text: str) -> str:
     return "#" + "".join(p[:1].upper() + p[1:] for p in parts) if parts else ""
 
 
+# Inte "utan" ("inte äkta utan kopia") eller "no" (för tvetydigt).
+_NEGATIONS = {"ingen", "inga", "inte", "ej", "not", "non"}
+
+
+def negated(text: str, pos: int) -> bool:
+    """Står ett nekande ord precis före positionen, med bara mellanslag emellan? ("äkta, ingen kopia")"""
+    m = re.search(r"(\w+)\s+$", text[:pos])
+    return bool(m) and m.group(1) in _NEGATIONS
+
+
 def keyword_re(keyword: str) -> re.Pattern:
     """Matchar nyckelordet som helt ord/fras, oavsett skiftläge och accenter."""
     return re.compile(r"(?<!\w)" + re.escape(fold(keyword)) + r"(?!\w)")
@@ -150,6 +160,7 @@ class BrandRule:
     suspicious_below: float = 0.0
     min_price: float = 0.0
     skip: bool = False  # undantaget märke, t.ex. en billig sidolinje som annars skulle matcha
+    exact: bool = False  # märket måste heta exakt så (t.ex. "Essentials", inte "Nike Sport Essentials")
 
 
 @dataclass
@@ -168,10 +179,11 @@ class Search:
 
     def rule_for(self, brand: str) -> BrandRule | None:
         brand_words = words(brand)
-        for key, rule in self.brands:
-            if contains_words(brand_words, key):
-                return rule
-        return self.other_brands
+        matches = [rule for key, rule in self.brands
+                   if (tuple(brand_words) == key if rule.exact else contains_words(brand_words, key))]
+        # Ett undantag gäller alltid, även när ett längre märkesnamn också matchar
+        # ("Ralph Lauren Chaps" ska undantas av "Chaps" trots att "Ralph Lauren" är längre).
+        return next((r for r in matches if r.skip), None) or (matches[0] if matches else self.other_brands)
 
     def all_rules(self) -> list[BrandRule]:
         """Alla regler som kan ge fynd (undantagna märken räknas inte)."""
@@ -235,6 +247,7 @@ def build_search(raw: dict, cfg: dict) -> Search:
             max_price=_num(mp, f"{name}/{label}: max_price"),
             suspicious_below=_num(spec.get("suspicious_below", suspicious), f"{name}/{label}: suspicious_below"),
             min_price=_num(spec.get("min_price", min_price), f"{name}/{label}: min_price"),
+            exact=bool(spec.get("exact", False)),
         )
         brands.append((tuple(words(str(label))), rule))
     # Längst namn först, så att t.ex. "polo ralph lauren" vinner över "ralph lauren".
@@ -503,7 +516,7 @@ def evaluate(item: Item, search: Search, cfg: dict) -> tuple[Deal | None, str]:
         return None, f"pris {item.price:.0f} utanför {rule.min_price:.0f}–{rule.max_price:.0f}"
     text = fold(item.title)
     for keyword, pattern in search.exclude:
-        if pattern.search(text):
+        if any(not negated(text, m.start()) for m in pattern.finditer(text)):
             return None, f"innehåller '{keyword}'"
     if search.sizes and item.size and not search.sizes & set(words(item.size)):
         return None, f"storlek {item.size}"
@@ -1200,6 +1213,14 @@ class Store:
         self.db.execute("INSERT OR REPLACE INTO seen_by VALUES (?, ?, ?, ?)", (search, item_id, price, now))
         self.db.commit()
 
+    def touch(self, search: str, item_ids: list[int]) -> None:
+        """Annonserna syns fortfarande: förnya last_seen så att prune() inte glömmer dem (och skickar dem igen)."""
+        now = int(time.time())
+        self.db.executemany("UPDATE seen_by SET last_seen = ? WHERE search = ? AND item_id = ?",
+                            [(now, search, i) for i in item_ids])
+        self.db.executemany("UPDATE seen SET last_seen = ? WHERE item_id = ?", [(now, i) for i in item_ids])
+        self.db.commit()
+
     def log_deal(self, deal: Deal) -> None:
         it = deal.item
         self.db.execute("UPDATE seen SET notified = 1 WHERE item_id = ?", (it.id,))
@@ -1259,10 +1280,12 @@ class Bot:
                 self._pause()
             items = self.client.fetch(search, page)
             new = 0
+            still_there = []
             for item in items:
                 prev = None if self.dry_run else self.store.seen_price(item.id, search.name)
                 dropped = prev is not None and item.price < prev - 0.5
                 if prev is not None and not dropped:
+                    still_there.append(item.id)
                     continue
                 new += prev is None
                 if not self.dry_run:
@@ -1283,6 +1306,8 @@ class Bot:
                     deal.price_drop_from = prev
                 self.notify(deal)
                 found += 1
+            if still_there:
+                self.store.touch(search.name, still_there)
             # Var alla annonser på sidan nya kan fler ha tillkommit sedan förra varvet – bläddra vidare.
             if self.dry_run or silent or not items or new < len(items):
                 break
@@ -1372,7 +1397,8 @@ class Bot:
                     log.exception("%s: oväntat fel – hoppar över sökningen det här varvet", search.name)
                     continue
                 total += found
-                log.debug("%s: %d fynd", search.name, found)
+                if found:  # bara antal – inga annonser, så det går bra även i publika loggar
+                    log.info("%s: %d fynd", search.name, found)
         finally:
             if rotate:
                 self.store.set_setting("next_search", str((start_at + done) % n))

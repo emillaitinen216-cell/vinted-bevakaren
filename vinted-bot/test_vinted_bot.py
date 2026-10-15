@@ -116,6 +116,20 @@ class MatchTests(unittest.TestCase):
     def setUp(self):
         self.cfg = make_cfg()
 
+    def test_skip_wins_over_longer_brand_name(self):
+        s = make_search(self.cfg, brands={"Ralph Lauren": 1000, "Chaps": "ignorera", "Burberry": 900,
+                                          "Thomas Burberry": None})
+        self.assertTrue(s.rule_for("Ralph Lauren Chaps").skip)
+        self.assertTrue(s.rule_for("Thomas Burberry").skip)
+        self.assertFalse(s.rule_for("Polo Ralph Lauren").skip)
+
+    def test_exact_brand(self):
+        s = make_search(self.cfg, brands={"Essentials": {"resale": 560, "exact": True}, "Fear of God": 560})
+        self.assertEqual(s.rule_for("ESSENTIALS").label, "Essentials")
+        self.assertIsNone(s.rule_for("Nike Sport Essentials"))
+        self.assertIsNone(s.rule_for("Amazon Essentials"))
+        self.assertEqual(s.rule_for("Fear of God Essentials").label, "Fear of God")
+
     def test_brand_matching(self):
         s = make_search(self.cfg, brands={"levis": 400, "cp company": 1800, "ralph lauren": 1000,
                                           "polo ralph lauren": 1100, "lee": 300, "fjallraven": 900, "nudie": 400})
@@ -159,6 +173,17 @@ class EvaluateTests(unittest.TestCase):
         self.cfg = make_cfg(shipping_estimate=49, sell_fee_percent=0)
         self.search = make_search(self.cfg, premium_keywords={"selvage": 100}, exclude_keywords=["replica"],
                                   suspicious_below=100)
+
+    def test_negated_exclude_word_is_ignored(self):
+        search = make_search(self.cfg, exclude_keywords=["kopia", "defekt", "fake"])
+        self.assertIsNotNone(vb.evaluate(item(title="Nudie jeans äkta, ingen kopia"), search, self.cfg)[0])
+        self.assertIsNotNone(vb.evaluate(item(title="Nudie not fake"), search, self.cfg)[0])
+        self.assertIsNone(vb.evaluate(item(title="Nudie kopia"), search, self.cfg)[0])
+        self.assertIsNone(vb.evaluate(item(title="Nudie defekt dragkedja"), search, self.cfg)[0])
+        self.assertIsNone(vb.evaluate(item(title="ingen kopia? jo, kopia"), search, self.cfg)[0])
+        self.assertIsNone(vb.evaluate(item(title="Nudie inte äkta utan kopia"), search, self.cfg)[0])
+        self.assertIsNone(vb.evaluate(item(title="Nudie no. kopia"), search, self.cfg)[0])
+        self.assertIsNone(vb.evaluate(item(title="Nudie ingen, kopia"), search, self.cfg)[0])
 
     def test_profit_with_bonus(self):
         deal, reason = vb.evaluate(item(title="Nudie Grim Tim Selvage"), self.search, self.cfg)
@@ -296,6 +321,19 @@ class BotTests(unittest.TestCase):
         twin = make_search(self.cfg, name="Tvilling")
         self.store.set_initialized(twin.name)
         self.assertEqual(self.bot.run_search(twin), 0)         # och samma annons skickas inte två gånger
+        self.assertEqual(len(self.notifier.sent), 1)
+
+    def test_listing_still_up_after_90_days_is_not_sent_again(self):
+        now = [1_000_000_000.0]
+        with mock.patch.object(vb.time, "time", side_effect=lambda: now[0]):
+            self.client.pages = {1: [item(id=5)]}
+            self.bot.run_search(self.search)                     # första körningen, tyst
+            self.client.pages = {1: [item(id=6), item(id=5)]}
+            self.assertEqual(self.bot.run_search(self.search), 1)
+            for _ in range(100):                                 # ligger kvar i 100 dagar
+                now[0] += 86400
+                self.store.prune()
+                self.assertEqual(self.bot.run_search(self.search), 0)
         self.assertEqual(len(self.notifier.sent), 1)
 
     def test_old_database_keeps_what_it_had_seen(self):

@@ -293,7 +293,8 @@ Andra kategorier: öppna kategorin på vinted.se. Siffran i adressen
 ## Kör i molnet utan egen dator (GitHub Actions)
 
 Det här passar om du bara har en webbläsare, till exempel en skol-Chromebook.
-GitHub kör då boten gratis var tionde minut, även när din dator är avstängd.
+Boten körs då gratis på GitHubs servrar var tionde minut, dygnet runt, även när
+din dator är avstängd.
 
 1. Skapa boten hos @BotFather (steg 1 under [Telegram](#telegram-rekommenderas)).
 2. Öppna repot på GitHub och gå till *Settings › Secrets and variables ›
@@ -307,10 +308,10 @@ GitHub kör då boten gratis var tionde minut, även när din dator är avstäng
    gruppen (se [Skicka fynden till en grupp](#skicka-fynden-till-en-grupp)).
    Gör det högst ett dygn före första körningen; äldre meddelanden har
    Telegram redan glömt.
-4. Vill du testa direkt går du till fliken **Actions**, väljer
-   **Vinted-bevakaren** och trycker **Run workflow**. Första körningen sparar
-   annonserna som redan ligger ute och skickar *"Vinted-bevakaren är kopplad
-   hit!"* till Telegram. Efter det kommer notiser om nya fynd.
+4. Starta boten: gå till fliken **Actions**, välj **Vinted-bevakaren** och
+   tryck **Run workflow**. Första körningen sparar annonserna som redan ligger
+   ute och skickar *"Vinted-bevakaren är kopplad hit!"* till Telegram. Efter
+   det startar varje körning själv nästa, och du får notiser om nya fynd.
 
 Bra att veta:
 
@@ -318,19 +319,21 @@ Bra att veta:
   kan köra var tionde minut. Koden syns för alla, men din token ligger som
   hemlighet och syns aldrig. Boten körs i tyst läge (`--tyst`), så loggarna
   visar inga fynd, chattnamn eller chatt-id:n.
+- **Varje körning startar nästa.** GitHubs schema (cron) startar inte på alla
+  konton, så när en körning är klar väntar den tills det gått tio minuter och
+  startar sedan nästa. Du behöver bara trycka **Run workflow** en gång.
+  - **Stoppa boten:** fliken **Actions** › **Vinted-bevakaren** › **⋯** ›
+    **Disable workflow**.
+  - **Starta igen:** **Enable workflow** och sedan **Run workflow**.
+  - Har boten stannat av sig själv (ingen ny körning på en kvart) trycker du
+    **Run workflow**.
 - **Privat repo:** ett gratiskonto har bara 2 000 Actions-minuter i månaden
-  för privata repon, delade mellan alla dina privata repon, och varje påbörjad
-  minut räknas. Kör då högst varannan halvtimme: ändra `cron` i
-  `.github/workflows/vinted-bot.yml` till `"7,37 * * * *"` och kommandot till
-  `python vinted_bot.py --once --paus 0.5 1.5 --max-tid 30`. Tar minuterna slut
-  stoppas alla Actions-körningar på kontot till nästa månad.
+  för privata repon, och varje påbörjad minut räknas. Var tionde minut skulle
+  göra slut på dem på ett par dygn, och då stoppas alla Actions-körningar på
+  kontot till nästa månad. Därför kör workflow-filen inte alls i ett privat
+  repo.
 - **Varje körning** söker i högst sju minuter (`--max-tid 420`). Sökningar som
   inte hann med tas först i nästa körning.
-- **Förseningar:** GitHub startar ibland schemalagda körningar några minuter
-  för sent, och vid hög belastning hoppas en del körningar över.
-- **60 dagar:** schemalagda körningar i publika repon stängs av automatiskt
-  efter 60 dagar utan ändringar i repot. GitHub skickar ett mejl innan. Tryck
-  då **Enable workflow** under fliken Actions.
 - **Spärrar:** Vinted kan ibland spärra GitHubs servrar. Boten försöker då igen
   vid nästa körning.
 
