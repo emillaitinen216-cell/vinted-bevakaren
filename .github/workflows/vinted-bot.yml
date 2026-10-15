@@ -101,6 +101,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         env:
           GH_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           started=${STARTED:-$(date +%s)}
           wait=$(( started + 600 - $(date +%s) ))
@@ -116,4 +120,9 @@ jobs:
             sleep 30
           done
           echo "::error::Kunde inte starta nästa körning. Tryck Run workflow under fliken Actions."
+          # Säg till i Telegram, annars märks det inte att boten har stannat.
+          if [ -f vinted-bot/vinted_bot.py ]; then
+            (cd vinted-bot && python vinted_bot.py --tyst --meddela \
+              "⚠️ Vinted-bevakaren har stannat. Öppna GitHub › Actions › Vinted-bevakaren och tryck Run workflow.") || true
+          fi
           exit 1

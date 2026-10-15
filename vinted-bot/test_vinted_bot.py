@@ -466,6 +466,17 @@ class TimeBudgetTests(unittest.TestCase):
         self.assertEqual(client.searched, ["A", "B", "C", "D"])
         self.assertIsNone(self.store.get_setting("next_search"))
 
+    def test_say_sends_text_to_saved_chat(self):
+        notifier = FakeNotifier()
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(vb, "build_notifiers", return_value=[notifier]) as build, \
+                mock.patch.dict(os.environ, {"GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "a/b"}):
+            self.assertEqual(vb.main(["--meddela", "Boten har stannat", "--db", str(Path(d) / "x.db")]), 0)
+            self.assertIsInstance(build.call_args.args[1], vb.Store)   # samma chatt som fynden
+            build.call_args.args[1].db.close()
+        self.assertEqual(notifier.sent[0].title, "Boten har stannat")
+        self.assertEqual(notifier.sent[0].url, "https://github.com/a/b/actions")
+
     def test_time_budget_option_is_validated(self):
         for bad in ("0", "-5", "inf", "nan"):
             with self.assertLogs("vinted-bot", "ERROR"):

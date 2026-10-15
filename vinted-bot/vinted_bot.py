@@ -1468,6 +1468,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="visa aktuella medianpriser per märke")
     ap.add_argument("--test-notis", "--test-notify", dest="test_notify", action="store_true",
                     help="skicka en testnotis till alla inställda kanaler")
+    ap.add_argument("--meddela", dest="say", metavar="TEXT",
+                    help="skicka TEXT till notiskanalerna, t.ex. ett larm från GitHub Actions")
     ap.add_argument("--telegram", action="store_true",
                     help="koppla Telegram: kollar token, hittar ditt chat-id och sparar båda i .env")
     ap.add_argument("--bara", "--only", dest="only", metavar="TEXT", help="kör bara sökningar vars namn innehåller TEXT")
@@ -1531,6 +1533,20 @@ def main(argv: list[str] | None = None) -> int:
                 if isinstance(n, TelegramNotifier) and isinstance(e, NotifyError) and e.status in (400, 401, 403, 404):
                     log.error("Kontrollera token och chat-id med: python vinted_bot.py --telegram")
         return 0 if ok else 1
+
+    if args.say:
+        # Använder databasen, så att meddelandet hamnar i samma chatt som fynden.
+        store = Store(Path(args.db) if args.db else config_path.parent / "vinted_bot.db")
+        server, repo = os.environ.get("GITHUB_SERVER_URL"), os.environ.get("GITHUB_REPOSITORY")
+        url = f"{server}/{repo}/actions" if server and repo else f"https://www.{cfg['domain']}/"
+        sent = False
+        for n in build_notifiers(cfg, store):
+            try:
+                n.send(Message(args.say, [], url))
+                sent = True
+            except Exception as e:
+                log.error("%s: %s", n.name, e)
+        return 0 if sent else 1
 
     debug_dir = Path(args.debug_dir) if args.debug_dir else None
     client = VintedClient(cfg["domain"], cfg["currency"], cfg["impersonate"], debug_dir)
