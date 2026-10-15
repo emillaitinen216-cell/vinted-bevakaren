@@ -1,0 +1,744 @@
+# Vinted-bevakaren – inställningar
+#
+# Alla belopp är i kronor (SEK). "resale" (vad du räknar med att kunna sälja
+# plagget för) är satt strax under medianen av annonspriserna på vinted.se
+# i oktober 2026. Priserna rör sig – kör då och då
+#   python vinted_bot.py --kalibrera
+# och justera efter din egen erfarenhet av vad som faktiskt säljer.
+#
+# Så räknas vinsten:
+#   säljvärde = resale × skickfaktor + plus för nyckelord (t.ex. "selvage")
+#   kostnad   = pris inkl. Vinteds köparskydd + shipping_estimate
+#   vinst     = säljvärde × (1 − sell_fee_percent/100) − kostnad
+# Du får en notis när vinst ≥ min_profit (och ROI ≥ min_roi_percent).
+
+domain: vinted.se
+currency: SEK
+
+interval_seconds: 240           # tid mellan varven (± 20 % slump)
+delay_between_searches: [3, 7]  # sekunder mellan sökningarna i ett varv
+max_pages: 3                    # bläddra max så här långt om allt på sidan 1 var nytt
+
+# Första gången en sökning körs sparas befintliga annonser utan notis,
+# så att du inte får hundra notiser direkt. Sätt true för att få dem ändå.
+notify_on_first_run: false
+
+shipping_estimate: 49           # frakten du betalar som köpare
+sell_fee_percent: 0             # Vinted tar ingen säljavgift. Tradera m.fl.: sätt t.ex. 10
+min_profit: 100                 # standard om en sökning inte anger eget
+min_roi_percent: 30             # minsta avkastning på insatsen
+
+# Säljvärdet multipliceras med skickfaktorn (resale anges för "Mycket bra").
+condition_multipliers:
+  Ny med prislapp: 1.25
+  Ny utan prislapp: 1.1
+  Mycket bra: 1.0
+  Bra: 0.85
+  Tillfredsställande: 0.6
+
+# Annonser vars titel innehåller något av de här orden hoppas över.
+# (Undvik ord som "fläck" eller "hål" – många skriver "inga fläckar eller hål".)
+exclude_keywords:
+  - replica
+  - fake
+  - kopia
+  - dupe
+  - inspired
+  - inspirerad
+  - look alike
+  - "1:1"
+  - söker        # "Söker Moncler …"-annonser
+  - wtb
+  - defekt       # trasiga plagg (men inte "defekter", som i "inga defekter")
+
+# Ord i titeln som höjer (eller med minus sänker) säljvärdet, i kronor.
+premium_keywords:
+  made in italy: 100
+  made in usa: 100
+  made in japan: 150
+  deadstock: 150
+
+# Valfritt: notiskanaler. Lägg hellre hemligheterna i filen .env
+# (se .env.example) så hamnar de inte i git.
+notify:
+  telegram:
+    bot_token: ""
+    chat_id: ""
+  discord_webhook: ""
+  ntfy_topic: ""
+  ntfy_server: https://ntfy.sh
+
+# --------------------------------------------------------------------------
+# Sökningar
+#
+#   name          visas i notisen (måste vara unikt)
+#   query         söktext på Vinted (tom = hela kategorin)
+#   catalog       Vinteds kategori-id:n, se README.md
+#   max_price     högsta pris (säljarens pris, före köparskydd)
+#   brands        märke: säljvärde   – eller  märke: {resale, max_price, suspicious_below}
+#                 (även min_price går att sätta per märke)
+#                 Bara listade märken bevakas, om inte "resale" anges för övriga.
+#   resale        säljvärde för märken som inte står i brands (valfritt)
+#   min_price     lägsta pris – billigare annonser hoppas över helt (valfritt)
+#   min_profit    minsta uppskattade vinst för notis
+#   suspicious_below  pris under detta flaggas "kolla äkthet" (vanligt med kopior)
+#   sizes         t.ex. [W32, W33, M] – bara dessa storlekar (valfritt)
+#   premium_keywords / exclude_keywords  läggs till de globala listorna
+#   tags          hashtaggar i notisen, t.ex. [Jeans] → #Jeans (märket blir alltid en hashtagg).
+#                 Tryck på en hashtagg i Telegram för att se alla notiser med den.
+#   enabled       false = pausa sökningen
+# --------------------------------------------------------------------------
+
+searches:
+
+  # "max_price" är ett tak för vad som hämtas; det är "min_profit" som avgör
+  # vad som blir notis. Ett plagg med bonusord (t.ex. "zatiny") kan därför vara
+  # lönsamt nära taket medan ett vanligt behöver vara betydligt billigare.
+  #
+  # "min_profit" är satt så att varje sökning ger högst ungefär två notiser per
+  # dygn (uppmätt på vinted.se i oktober 2026), alltså bara de bästa fynden.
+  # Populära märken som Ralph Lauren och Supreme har så många billiga annonser
+  # att i stort sett bara plagg med bonusord (t.ex. "polo bear", "box logo")
+  # räcker. Vill du ha fler notiser sänker du min_profit, färre höjer du den.
+
+  # ---------------- Jeans, herr (kategori 257) ----------------
+
+  - name: Nudie Jeans
+    query: nudie
+    catalog: [257]
+    tags: [Jeans]
+    max_price: 250
+    min_profit: 210
+    brands:
+      Nudie: 380            # median ~400 kr, undre kvartil ~300 kr
+    premium_keywords:
+      selvage: 100
+      selvedge: 100
+
+  - name: Replay
+    query: replay
+    catalog: [257]
+    tags: [Jeans]
+    max_price: 200
+    min_profit: 120
+    brands:
+      Replay: 320           # median ~350 kr, undre kvartil ~200 kr
+    premium_keywords:
+      hyperflex: 100
+
+  - name: Dondup
+    query: dondup
+    catalog: [257]
+    tags: [Jeans]
+    max_price: 320
+    min_profit: 170
+    brands:
+      Dondup: 480           # median ~500 kr, undre kvartil ~400 kr
+
+  - name: Diesel
+    query: diesel
+    catalog: [257]
+    tags: [Jeans]
+    max_price: 250
+    min_profit: 170
+    brands:
+      Diesel: 260           # median ~256 kr, undre kvartil ~155 kr – vanliga Diesel måste vara riktigt billiga
+    premium_keywords:
+      zatiny: 300           # klassiska bootcut-modellen
+      zathan: 150
+      bootcut: 100
+      vintage: 60
+
+  - name: Bootcut herr
+    query: bootcut
+    catalog: [257]
+    tags: [Jeans, Bootcut]
+    max_price: 300
+    min_profit: 240
+    brands:
+      True Religion: 800
+      Evisu: 900
+      "Levi's": 450
+      Nudie: 450
+      Dondup: 480
+      Diesel: 400
+      Replay: 350
+      Lee: 350
+    premium_keywords:
+      "517": 100            # Levi's 517 bootcut
+      zatiny: 200
+
+  # ---------------- Fältjackor ----------------
+
+  # Hela kategorin Herr › Jackor › Militär- och bruksjackor (2535), så att
+  # fältjackor hittas även om märket inte står i titeln.
+  - name: Fältjackor (märken)
+    query: ""
+    catalog: [2535]
+    tags: [Fältjacka]
+    min_profit: 250
+    brands:
+      Stone Island:        {resale: 2000, max_price: 1100, suspicious_below: 500}
+      "C.P. Company":      {resale: 1600, max_price: 900,  suspicious_below: 400}
+      Belstaff:            {resale: 1300, max_price: 700}
+      Filson:              {resale: 1300, max_price: 700}
+      Engineered Garments: {resale: 1300, max_price: 700}
+      Ralph Lauren:        {resale: 1000, max_price: 550}
+      Our Legacy:          {resale: 1000, max_price: 550}
+      Acne Studios:        {resale: 1000, max_price: 550}
+      Barbour:             {resale: 900,  max_price: 550}
+      Carhartt:            {resale: 800,  max_price: 450}
+      Schott:              {resale: 800,  max_price: 450}
+      Alpha Industries:    {resale: 650,  max_price: 350}
+      Fjällräven:          {resale: 550,  max_price: 250}
+
+  # Barbour i alla herrjackor och -kappor (1206) – vaxjackor ligger ofta under "Quiltade" eller "Kappor".
+  - name: Barbour
+    query: barbour
+    catalog: [1206]
+    tags: [Jacka]
+    max_price: 650
+    min_profit: 430
+    suspicious_below: 200
+    brands:
+      Barbour: 800          # median ~830 kr, undre kvartil ~515 kr
+    premium_keywords:
+      beaufort: 300
+      bedale: 250
+      border: 150
+      made in england: 200
+
+  - name: Field jacket / M65
+    query: field jacket
+    catalog: [1206]
+    tags: [Fältjacka]
+    max_price: 550
+    min_profit: 250
+    brands:
+      Ralph Lauren: 1000    # median ~1 200 kr
+      Carhartt: 800
+      Schott: 800
+      Alpha Industries: 650
+      Stone Island: {resale: 2000, max_price: 1100, suspicious_below: 500}
+      "C.P. Company": {resale: 1600, max_price: 900,  suspicious_below: 400}
+    premium_keywords:
+      m65: 100
+      m-65: 100
+
+  # ---------------- Dunjackor (Dunjackor 2536 + Kappor 2051) ----------------
+
+  - name: Moncler
+    query: moncler
+    catalog: [2536, 2051]
+    tags: [Dunjacka]
+    min_price: 900          # under det är det nästan alltid kopior eller barnjackor
+    max_price: 2400
+    min_profit: 1680
+    suspicious_below: 1500  # Moncler är det mest kopierade märket – var extra noga
+    brands:
+      Moncler: 3200         # median ~3 500 kr, undre kvartil ~2 000 kr
+    premium_keywords:
+      maya: 800
+
+  - name: Canada Goose
+    query: canada goose
+    catalog: [2536, 2051]
+    tags: [Dunjacka]
+    min_price: 900
+    max_price: 2300
+    min_profit: 1450
+    suspicious_below: 1500
+    brands:
+      Canada Goose: 3000    # median ~3 400 kr, undre kvartil ~2 100 kr
+    premium_keywords:
+      expedition: 500
+
+  - name: Arc'teryx dun
+    query: arc'teryx
+    catalog: [2536, 2051]
+    tags: [Dunjacka]
+    min_price: 400
+    max_price: 1400
+    min_profit: 920
+    brands:
+      "Arc'teryx": 2000        # median ~2 100 kr, undre kvartil ~1 550 kr
+    premium_keywords:
+      therme: 600
+      thorium: 200
+      cerium: 200
+
+  - name: Parajumpers
+    query: parajumpers
+    catalog: [2536, 2051]
+    tags: [Dunjacka]
+    min_price: 300
+    max_price: 900
+    min_profit: 530
+    suspicious_below: 500
+    brands:
+      Parajumpers: 1300     # median ~1 450 kr, undre kvartil ~900 kr
+    premium_keywords:
+      right hand: 300
+
+  - name: Fjällräven dun
+    query: fjällräven
+    catalog: [2536, 2051]
+    tags: [Dunjacka]
+    max_price: 750
+    min_profit: 630
+    brands:
+      Fjällräven: 1100      # median ~1 200 kr, undre kvartil ~760 kr
+    premium_keywords:
+      expedition: 300
+
+  - name: The North Face dun
+    query: north face
+    catalog: [2536]
+    tags: [Dunjacka]
+    min_price: 200
+    max_price: 700
+    min_profit: 680
+    suspicious_below: 350   # Nuptse-kopior är vanliga
+    brands:
+      North Face: 1000      # median ~1 150 kr, undre kvartil ~800 kr
+    premium_keywords:
+      himalayan: 400
+      mcmurdo: 150
+      nuptse: 100
+
+  - name: Patagonia dun
+    query: patagonia
+    catalog: [2536]
+    tags: [Dunjacka]
+    max_price: 600
+    min_profit: 330
+    brands:
+      Patagonia: 950        # median ~925 kr, undre kvartil ~720 kr
+    premium_keywords:
+      fitz roy: 300
+
+  - name: Peak Performance dun
+    query: peak performance
+    catalog: [2536]
+    tags: [Dunjacka]
+    max_price: 500
+    min_profit: 380
+    brands:
+      Peak Performance: 750 # median ~800 kr, undre kvartil ~470 kr
+
+  # ---------------- Fler jackor (Jackor 2052 / Kappor & jackor 1206) ----------------
+  #
+  # Kalibrerade mot annonspriserna på vinted.se i oktober 2026. "kolla äkthet"-gränsen
+  # (suspicious_below) är satt högt för märken som ofta kopieras.
+
+  - name: Stone Island jackor
+    query: stone island
+    catalog: [2052]
+    tags: [Jacka]
+    min_price: 360
+    max_price: 1480
+    min_profit: 850
+    suspicious_below: 730   # kolla märket (badge), knapparna och certilogo-koden
+    brands:
+      Stone Island: 1770    # median ~1 970 kr, undre kvartil ~1 210 kr
+    premium_keywords:
+      ghost: 300
+      shadow project: 600
+
+  - name: C.P. Company jackor
+    query: c.p. company
+    catalog: [2052]
+    tags: [Jacka]
+    min_price: 320
+    max_price: 1470
+    min_profit: 1160
+    suspicious_below: 630   # goggle-jackan är bland det mest kopierade – kolla linserna och etiketterna
+    brands:
+      "C.P. Company": 1770  # median ~1 970 kr, undre kvartil ~1 060 kr
+    premium_keywords:
+      goggle: 200
+
+  - name: Burberry rockar och jackor
+    query: burberry
+    catalog: [1206]
+    tags: [Jacka]
+    min_price: 420
+    max_price: 1500
+    min_profit: 660
+    suspicious_below: 840
+    brands:
+      Burberry: 1800        # median ~2 000 kr, undre kvartil ~1 400 kr
+      Burberrys: 1800       # vintage-stavningen
+      Thomas Burberry: ignorera   # billig sidolinje
+    premium_keywords:
+      made in england: 200
+      kensington: 200
+      sandringham: 200
+
+  - name: Prada jackor
+    query: prada
+    catalog: [1206]
+    tags: [Jacka]
+    min_price: 600          # billigare än så är nästan alltid kopior
+    max_price: 2160
+    min_profit: 1020
+    suspicious_below: 1200
+    brands:
+      Prada: 2590           # median ~2 880 kr, undre kvartil ~1 700 kr
+    premium_keywords:
+      re-nylon: 200
+      linea rossa: 200
+
+  - name: Moose Knuckles
+    query: moose knuckles
+    catalog: [1206]
+    tags: [Dunjacka]
+    min_price: 900          # mycket kopierat – be om kvitto och bilder på märket
+    max_price: 2500
+    min_profit: 1730
+    suspicious_below: 1500
+    brands:
+      Moose Knuckles: 3000  # median ~3 330 kr, undre kvartil ~1 850 kr
+
+  - name: Arc'teryx jackor
+    query: arc'teryx
+    catalog: [2052]
+    tags: [Jacka]
+    min_price: 320
+    max_price: 1190
+    min_profit: 690
+    suspicious_below: 700   # kopior av Beta och Atom är vanliga
+    brands:
+      "Arc'teryx": 1430     # median ~1 580 kr, undre kvartil ~1 060 kr
+    premium_keywords:
+      alpha sv: 600
+      beta sv: 500
+      beta ar: 300
+
+  - name: Herno
+    query: herno
+    catalog: [1206]
+    tags: [Jacka]
+    max_price: 1500
+    min_profit: 490
+    brands:
+      Herno: 1800           # median ~2 000 kr, undre kvartil ~1 400 kr (få annonser)
+    premium_keywords:
+      laminar: 400
+
+  - name: Ralph Lauren jackor
+    query: ralph lauren
+    catalog: [2052]
+    tags: [Jacka]
+    max_price: 730
+    min_profit: 610
+    suspicious_below: 240
+    brands:
+      Ralph Lauren: 880     # median ~980 kr, undre kvartil ~530 kr
+      Lauren Ralph Lauren: ignorera   # billigare sidolinjer
+      Chaps Ralph Lauren: ignorera
+      Chaps: ignorera
+    premium_keywords:
+      rrl: 600
+      polo sport: 150
+      rlx: 150
+      suede: 200
+      mocka: 200
+
+  - name: Woolrich
+    query: woolrich
+    catalog: [1206]
+    tags: [Jacka]
+    max_price: 670
+    min_profit: 550
+    suspicious_below: 230
+    brands:
+      Woolrich: 810         # median ~900 kr, undre kvartil ~520 kr
+    premium_keywords:
+      arctic parka: 300
+      john rich: 200
+
+  - name: Napapijri
+    query: napapijri
+    catalog: [1206]
+    tags: [Jacka]
+    max_price: 480
+    min_profit: 340
+    suspicious_below: 170
+    brands:
+      Napapijri: 580        # median ~640 kr, undre kvartil ~380 kr
+    premium_keywords:
+      skidoo: 150
+      rainforest: 100
+
+  - name: Sail Racing
+    query: sail racing
+    catalog: [1206]
+    tags: [Jacka]
+    max_price: 520
+    min_profit: 330
+    brands:
+      Sail Racing: 630      # median ~700 kr, undre kvartil ~450 kr
+    premium_keywords:
+      bowman: 200
+      race edition: 300
+
+  - name: Haglöfs
+    query: haglöfs
+    catalog: [1206]
+    tags: [Jacka]
+    max_price: 400
+    min_profit: 280
+    brands:
+      Haglöfs: 490          # median ~540 kr, undre kvartil ~310 kr
+    premium_keywords:
+      gore-tex: 200
+      gore tex: 200
+      goretex: 200
+      spitz: 300
+      roc: 150
+
+  - name: Norrøna
+    query: norrøna
+    catalog: [1206]
+    tags: [Jacka]
+    max_price: 470
+    min_profit: 310
+    brands:
+      Norrøna: 570          # median ~630 kr, undre kvartil ~410 kr
+    premium_keywords:
+      lofoten: 300
+      trollveggen: 300
+      falketind: 200
+      gore-tex pro: 200
+
+  - name: Mammut
+    query: mammut
+    catalog: [1206]
+    tags: [Jacka]
+    max_price: 440
+    min_profit: 270
+    brands:
+      Mammut: 520           # median ~580 kr, undre kvartil ~390 kr
+    premium_keywords:
+      gore-tex: 150
+      gore tex: 150
+      goretex: 150
+      nordwand: 400
+      eiger: 200
+
+  - name: Patagonia jackor
+    query: patagonia
+    catalog: [2052]
+    tags: [Jacka]
+    max_price: 580
+    min_profit: 380
+    brands:
+      Patagonia: 700        # median ~780 kr, undre kvartil ~520 kr
+    premium_keywords:
+      retro-x: 200
+      retro x: 200
+      synchilla: 100
+
+  - name: Carhartt jackor
+    query: carhartt
+    catalog: [2052]
+    tags: [Jacka]
+    max_price: 620
+    min_profit: 460
+    suspicious_below: 230
+    brands:
+      Carhartt: 740         # median ~830 kr, undre kvartil ~520 kr (gäller även Carhartt WIP)
+    premium_keywords:
+      detroit: 250
+      santa fe: 200
+      vintage: 100
+
+  # ---------------- Tröjor (79, inkl. huvtröjor och koftor), t-shirtar och skjortor ----------------
+
+  - name: Moncler tröjor
+    query: moncler
+    catalog: [79]
+    tags: [Tröja]
+    min_price: 220
+    max_price: 960
+    min_profit: 430
+    suspicious_below: 500   # kolla filtmärket och QR/NFC-etiketten
+    brands:
+      Moncler: 1160         # median ~1 290 kr, undre kvartil ~750 kr
+
+  - name: Supreme
+    query: supreme
+    catalog: [79]
+    tags: [Tröja]
+    min_price: 200
+    max_price: 740
+    min_profit: 740
+    suspicious_below: 400   # box logo kopieras mycket – kolla nacketiketten och broderiet
+    brands:
+      Supreme: 890          # median ~980 kr, undre kvartil ~650 kr
+    premium_keywords:
+      box logo: 500
+      bogo: 500
+
+  - name: Acne Studios tröjor
+    query: acne studios
+    catalog: [79]
+    tags: [Tröja]
+    max_price: 700
+    min_profit: 460
+    suspicious_below: 290
+    brands:
+      Acne Studios: 850     # median ~940 kr, undre kvartil ~650 kr
+
+  - name: C.P. Company tröjor och skjortor
+    query: cp company
+    catalog: [79, 536]
+    tags: [Tröja, Skjorta]
+    min_price: 140
+    max_price: 510
+    min_profit: 240
+    suspicious_below: 270
+    brands:
+      "C.P. Company": 610   # median ~670 kr, undre kvartil ~450 kr
+    premium_keywords:
+      goggle: 150
+
+  - name: Ami Paris
+    query: ami paris
+    catalog: [79]
+    tags: [Tröja]
+    max_price: 640
+    min_profit: 310
+    suspicious_below: 200   # kolla broderiet på hjärtlogan
+    brands:
+      Ami Paris: 770        # median ~850 kr, undre kvartil ~450 kr
+      AMI: 770              # märket heter ibland bara "AMI" på Vinted
+
+  - name: Stone Island tröjor
+    query: stone island
+    catalog: [79]
+    tags: [Tröja]
+    min_price: 160
+    max_price: 570
+    min_profit: 270
+    suspicious_below: 310
+    brands:
+      Stone Island: 680     # median ~760 kr, undre kvartil ~520 kr
+    premium_keywords:
+      ghost: 200
+      shadow project: 400
+
+  - name: Burberry tröjor och skjortor
+    query: burberry
+    catalog: [79, 536]
+    tags: [Tröja, Skjorta]
+    min_price: 120
+    max_price: 490
+    min_profit: 280
+    suspicious_below: 230   # rutiga Nova-skjortor kopieras – kolla att rutorna möts i sömmarna
+    brands:
+      Burberry: 580         # median ~650 kr, undre kvartil ~390 kr
+      Burberrys: 580
+      Thomas Burberry: ignorera
+
+  - name: Ralph Lauren tröjor
+    query: ralph lauren
+    catalog: [79]
+    tags: [Tröja]
+    max_price: 290
+    min_profit: 270
+    suspicious_below: 110
+    brands:
+      Ralph Lauren: 350     # median ~390 kr, undre kvartil ~250 kr
+      Lauren Ralph Lauren: ignorera
+      Chaps Ralph Lauren: ignorera
+      Chaps: ignorera
+    premium_keywords:
+      cashmere: 200
+      kashmir: 200
+      polo bear: 300
+      hand knit: 150
+      rrl: 300
+
+  - name: Fear of God Essentials
+    query: essentials
+    catalog: [267, 1821]
+    tags: [Hoodie, Mjukisbyxor]
+    min_price: 120
+    max_price: 470
+    min_profit: 320
+    suspicious_below: 250   # kopior är vanliga – kolla tygets tjocklek och gummilogan
+    brands:
+      Essentials: 560       # median ~620 kr, undre kvartil ~410 kr
+      Amazon Essentials: ignorera
+      Outdoor Essentials: ignorera
+      Basic Essentials: ignorera
+
+  - name: Our Legacy
+    query: our legacy
+    catalog: [536, 257]
+    tags: [Skjorta, Jeans]
+    max_price: 450
+    min_profit: 200
+    brands:
+      Our Legacy: 540       # median ~600 kr, undre kvartil ~410 kr
+
+  # ---------------- Byxor, shorts och fler jeans ----------------
+
+  - name: C.P. Company byxor och shorts
+    query: cp company
+    catalog: [34, 80]
+    tags: [Byxor, Shorts]
+    max_price: 480
+    min_profit: 200
+    suspicious_below: 160
+    brands:
+      "C.P. Company": 580   # median ~640 kr, undre kvartil ~360 kr
+
+  - name: Stone Island byxor och shorts
+    query: stone island
+    catalog: [34, 80]
+    tags: [Byxor, Shorts]
+    min_price: 120
+    max_price: 450
+    min_profit: 140
+    suspicious_below: 230
+    brands:
+      Stone Island: 540     # median ~600 kr, undre kvartil ~390 kr
+
+  - name: Jacob Cohën
+    query: jacob cohen
+    catalog: [257]
+    tags: [Jeans]
+    max_price: 600
+    min_profit: 330
+    suspicious_below: 250
+    brands:
+      Jacob Cohën: 720      # median ~800 kr, undre kvartil ~550 kr
+
+  - name: A.P.C.
+    query: a.p.c.
+    catalog: [257]
+    tags: [Jeans]
+    max_price: 520
+    min_profit: 180
+    brands:
+      A.P.C.: 630           # median ~700 kr, undre kvartil ~450 kr
+    premium_keywords:
+      selvedge: 100
+      selvage: 100
+
+  - name: Acne Studios jeans och byxor
+    query: acne studios
+    catalog: [257, 34]
+    tags: [Jeans, Byxor]
+    max_price: 300
+    min_profit: 200
+    brands:
+      Acne Studios: 360     # median ~400 kr, undre kvartil ~230 kr
+    premium_keywords:
+      bootcut: 100
+      "1981": 80
+      blå konst: 100
+      vintage: 50

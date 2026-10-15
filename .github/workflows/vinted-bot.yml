@@ -1,0 +1,63 @@
+# Kör Vinted-bevakaren i molnet var tionde minut – ingen egen dator behövs.
+#
+# Engångsinställning: lägg in din Telegram-token som hemlighet med namnet
+# TELEGRAM_BOT_TOKEN (Settings › Secrets and variables › Actions › New repository
+# secret) och skriv "hej" till din bot. Chat-id hittas automatiskt.
+# Se vinted-bot/README.md, avsnittet "Kör i molnet".
+name: Vinted-bevakaren
+
+on:
+  schedule:
+    # Var tionde minut (minut 3, 13, 23 …). Det här repot ska vara PUBLIKT: då är
+    # Actions-minuterna obegränsade. I ett privat repo räcker gratisminuterna
+    # (2 000 i månaden) bara till "7,37 * * * *" med --max-tid 30 – tar de slut
+    # stoppas ALLA Actions-körningar på kontot till nästa månad.
+    - cron: "3-59/10 * * * *"
+  workflow_dispatch: # knappen "Run workflow" under fliken Actions
+
+concurrency:
+  group: vinted-bot
+  cancel-in-progress: false
+
+jobs:
+  bevaka:
+    # Schemat körs bara medan repot är publikt. Ett överhoppat jobb kostar inga minuter.
+    if: github.event_name != 'schedule' || !github.event.repository.private
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: vinted-bot
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: vinted-bot/requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      # Sedda annonser sparas mellan körningarna så att bara nya annonser ger notis.
+      - uses: actions/cache/restore@v4
+        with:
+          path: vinted-bot/vinted_bot.db
+          key: vinted-db-${{ github.run_id }}
+          restore-keys: vinted-db-
+
+      - name: Sök på Vinted och skicka notiser
+        # --tyst: loggarna i ett publikt repo syns för alla, så inga fynd eller chatt-id:n skrivs ut.
+        # Inga nya sökningar efter sju minuter; resten tas först i nästa körning.
+        run: python vinted_bot.py --once --tyst --paus 2 4 --max-tid 420
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: vinted-bot/vinted_bot.db
+          key: vinted-db-${{ github.run_id }}
