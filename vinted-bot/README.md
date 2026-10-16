@@ -50,7 +50,9 @@ märke. Kategorierna ställs in med `tags` i `config.yaml`.
 
 Märken som ofta kopieras (Moncler, Canada Goose, Stone Island, TNF …) får
 **⚠️ Misstänkt lågt pris** när priset är under `suspicious_below`. Kontrollera
-äktheten innan du köper.
+äktheten innan du köper. Tryck på **🔍 Legitcheck** under ett fynd för att få
+en riskbedömning och en checklista för märket (se
+[Legitcheck](#legitcheck-är-plagget-äkta)).
 
 ---
 
@@ -187,6 +189,58 @@ TELEGRAM_CHAT_ID=987654321
 ```
 
 </details>
+
+#### Legitcheck: är plagget äkta?
+
+I fynd-chatten (gruppen) och i din privata chatt med boten kan ni be om en
+riskbedömning av en annons:
+
+- Tryck på **🔍 Legitcheck** under ett fynd, eller
+- skriv `/legit` och klistra in länken till en Vinted-annons, eller
+- svara på ett fynd med `/legit`.
+
+Svaret kommer inom några sekunder:
+
+```
+🔍 Legitcheck: Moncler – 1 422 kr
+   Risk för kopia: 🔴 Hög
+   ⚠️ Varningssignaler
+   • Priset (1 422 kr) är under gränsen där kopior är vanliga för Moncler (1 500 kr)
+   • Säljaren har inga omdömen
+   ✅ Talar för
+   • 15 bilder
+   📋 Be säljaren om bilder och kolla (Moncler)
+   • …
+```
+
+Boten väger ihop:
+
+- **Priset** jämfört med vad märket brukar säljas för i samma kategori.
+  Jämförelsen gäller bara märken som finns i `config.yaml`.
+- **Säljarens omdömen och betyg.**
+- **Ord i annonsen** som "replica", "1:1" eller "vet ej om äkta". Ett kvitto
+  eller en QR-kod som säljaren nämner räknas som något som talar för.
+- **Antal bilder.**
+
+Sedan visar den vad du ska be säljaren fotografera för just det märket, och
+länkar till märkets egen äkthetskontroll om det finns en. Märkenas
+checklistor står i `legit_tips.yaml` och går att ändra.
+
+**Boten kan inte se på bilderna om ett plagg är äkta.** Det är en
+riskbedömning, inte en garanti. Erbjuder Vinted äkthetskontroll för annonsen
+står det i svaret. Bara fynd-chatten och din privata chatt får svar.
+
+- **Är boten inte admin i gruppen** får den bara kommandon som riktas till
+  den. Skriv då `/legit@dinbot` (bottens användarnamn), eller gör boten till
+  admin.
+- **I molnet** svarar boten nästan hela tiden. Det finns en paus på ungefär en
+  minut var tionde minut, när en körning byts mot nästa. Kommer svaret inte
+  direkt, kommer det efter pausen.
+- **På en egen dator** svarar boten så länge `python vinted_bot.py` kör. Kör
+  den inte på en egen dator samtidigt som i molnet med samma bot – då tar de
+  Telegram-meddelandena från varandra.
+- **En enstaka annons utan Telegram:**
+  `python vinted_bot.py --legit https://www.vinted.se/items/…`
 
 ### ntfy (enklast, inget konto)
 

@@ -182,7 +182,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertIsNone(vb.evaluate(item(title="Nudie defekt dragkedja"), search, self.cfg)[0])
         self.assertIsNone(vb.evaluate(item(title="ingen kopia? jo, kopia"), search, self.cfg)[0])
         self.assertIsNone(vb.evaluate(item(title="Nudie inte äkta utan kopia"), search, self.cfg)[0])
-        self.assertIsNone(vb.evaluate(item(title="Nudie no. kopia"), search, self.cfg)[0])
+        self.assertIsNotNone(vb.evaluate(item(title="Nudie inte en kopia"), search, self.cfg)[0])
         self.assertIsNone(vb.evaluate(item(title="Nudie ingen, kopia"), search, self.cfg)[0])
 
     def test_profit_with_bonus(self):
@@ -1109,6 +1109,320 @@ class DiscoverChatTests(unittest.TestCase):
         self.assertEqual(calls, ["-400", "-1001234"])
         self.assertEqual((n.chat_id, remembered), ("-1001234", ["-1001234"]))
         self.assertIsNone(vb.NotifyError(400, "inte json").migrate_to_chat_id)
+
+
+
+# --------------------------------------------------------------------------
+# Legitcheck
+# --------------------------------------------------------------------------
+
+def plugin(name, data):
+    return '["$","$L8a",null,' + json.dumps({"data": data, "exposures": [], "name": name, "section": "sidebar",
+                                              "type": name}, ensure_ascii=False) + "]"
+
+
+def listing_page(item_id=42, brand="Moncler", price="1200.00", reviews=0, rating=0, photos=2, title="Moncler jacka",
+                 description="Fin jacka", condition="Mycket bra", catalog=(5, 1206, 2052, 2536), verification=None):
+    """En annonssida i samma format som Vinteds (RSC), med bara de delar legitcheck läser."""
+    parts = [
+        plugin("summary", {"item_id": str(item_id), "lines": [{"elements": [{"style": "title", "type": "text",
+                                                                             "value": title}]}]}),
+        plugin("gallery", {"item_id": str(item_id), "photos": [{"id": str(i)} for i in range(photos)]}),
+        plugin("attributes", {"item_id": str(item_id), "attributes": [
+            {"code": "brand", "data": {"value": brand}}, {"code": "size", "data": {"value": "L"}},
+            {"code": "status", "data": {"value": condition}}]}),
+        plugin("description", {"item_id": str(item_id), "description": description}),
+        plugin("user_info_header", {"item_id": str(item_id), "name": "säljare", "feedback_count": reviews,
+                                    "feedback_reputation": rating, "business": False}),
+        plugin("breadcrumbs", {"item_id": str(item_id), "breadcrumbs": [{"url": f"/catalog/{c}-x"} for c in catalog]}),
+        plugin("ask_seller", {"item_id": str(item_id), "is_reserved": False}),
+        json.dumps({"pricingServices": {"services": {"itemVerification": verification},
+                                        "originalAskingAmount": {"amount": price, "currencyCode": "SEK"},
+                                        "totalAmount": {"amount": "1300.00", "currencyCode": "SEK"}}}),
+    ]
+    return "\n".join(f"{i:x}:{p}" for i, p in enumerate(parts))
+
+
+LEGIT_TIPS = {
+    "general": ["Bekräfta inte att allt är OK förrän du har kollat plagget."],
+    "brands": {
+        "Moncler": {"official": {"name": "Moncler", "url": "https://code.moncler.com", "how": "skanna QR-koden"},
+                    "tips": ["Be om bild på QR/NFC-etiketten."]},
+        "Fear of God Essentials": {"aliases": ["Essentials"], "tips": ["Kolla gummiloggan."]},
+    },
+}
+
+
+def legit_searches(cfg):
+    return [make_search(cfg, name="Moncler", catalog=[2536], max_price=2400,
+                        brands={"Moncler": {"resale": 3200, "suspicious_below": 1500}})]
+
+
+class LegitCheckTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = make_cfg()
+        self.searches = legit_searches(self.cfg)
+
+    def check(self, **kw):
+        listing = vb.parse_listing(listing_page(**kw), BASE, kw.get("item_id", 42))
+        return listing, vb.legit_check(listing, self.searches, LEGIT_TIPS)
+
+    def test_parse_listing(self):
+        listing, _ = self.check(photos=5, reviews=31, rating=0.97, verification={"price": 99})
+        self.assertEqual((listing.brand, listing.size, listing.condition, listing.title), ("Moncler", "L", "Mycket bra", "Moncler jacka"))
+        self.assertEqual((listing.price, listing.photos, listing.seller_reviews), (1200.0, 5, 31))
+        self.assertEqual(listing.catalog_ids, [5, 1206, 2052, 2536])
+        self.assertTrue(listing.verification_offered)
+        self.assertEqual(listing.url, f"{BASE}/items/42")
+
+    def test_parse_listing_from_html(self):
+        rsc = listing_page()
+        html = '<script>self.__next_f.push([1,' + json.dumps(rsc) + '])</script>'
+        self.assertEqual(vb.parse_listing(html, BASE, 42).brand, "Moncler")
+        self.assertIsNone(vb.parse_listing("<html>inget här</html>", BASE, 42))
+
+    def test_high_risk(self):
+        _, msg = self.check(price="900", reviews=0, description="Moncler 1:1")
+        text = "\n".join(msg.lines)
+        self.assertIn("🔴 Hög", text)
+        self.assertIn("under gränsen där kopior är vanliga", text)
+        self.assertIn("inga omdömen", text)
+        self.assertIn("'1:1'", text)
+        self.assertIn("code.moncler.com", text)
+        self.assertTrue(msg.title.startswith("🔍 Legitcheck: Moncler – 900 kr"))
+
+    def test_low_risk(self):
+        _, msg = self.check(price="3100", reviews=40, rating=0.98, photos=10, description="Kvitto finns. Inte fake.")
+        text = "\n".join(msg.lines)
+        self.assertIn("🟢 Låg", text)
+        self.assertIn("40 omdömen", text)
+        self.assertIn("Säljaren nämner kvitto", text)
+        self.assertNotIn("'fake'", text)                  # "inte fake" räknas inte
+
+    def test_unknown_brand_gets_general_tips(self):
+        _, msg = self.check(brand="Okänt AB", reviews=12, rating=1, photos=5)
+        text = "\n".join(msg.lines)
+        self.assertNotIn("Priset", text)                  # inget att jämföra med
+        self.assertIn("(allmänt)", text)
+        self.assertIn("Bekräfta inte att allt är OK", text)
+
+    def text_of(self, **kw):
+        return "\n".join(self.check(**kw)[1].lines)
+
+    def test_denials_are_not_fake_words(self):
+        for desc in ("100% äkta, inte en kopia", "Not a fake, bought in store", "This is not a replica",
+                     "Inte någon fake!", "Fake fur i huvan", "Kopia på kvittot finns"):
+            text = self.text_of(price="3100", reviews=40, rating=0.98, photos=10, description=desc)
+            self.assertNotIn("Annonsen innehåller", text, desc)
+            self.assertIn("🟢 Låg", text, desc)
+        self.assertIn("'kopia'", self.text_of(description="Inte äkta utan kopia"))
+
+    def test_fake_word_wins_over_proof(self):
+        text = self.text_of(price="3100", reviews=40, rating=0.98, photos=10,
+                            description="1:1 replica, QR-kod och NFC funkar, kvitto medföljer")
+        self.assertIn("🔴 Hög", text)
+        self.assertNotIn("Säljaren nämner", text)
+
+    def test_missing_receipt_is_not_proof(self):
+        for desc in ("Inget kvitto finns tyvärr", "Kvitto saknas", "Säljs utan kvitto", "No receipt", "Kvitto finns inte"):
+            self.assertNotIn("Säljaren nämner", self.text_of(description=desc), desc)
+        self.assertIn("Säljaren nämner kvitto", self.text_of(description="Kvitto finns. Inte fake."))
+
+    def test_ambiguous_words_only_raise_a_flag(self):
+        text = self.text_of(price="3100", reviews=40, rating=0.98, photos=10, description="Inspired by the 90s")
+        self.assertIn("'inspired' – kolla vad som menas", text)
+        self.assertIn("🟡 Medel", text)
+
+    def test_most_specific_search_sets_the_price(self):
+        broad = make_search(self.cfg, name="Jackor", catalog=[1206], max_price=900, brands={"Moncler": 1000})
+        listing = vb.parse_listing(listing_page(price="1200"), BASE, 42)
+        text = "\n".join(vb.legit_check(listing, [broad] + self.searches, LEGIT_TIPS).lines)
+        self.assertIn("under gränsen där kopior är vanliga för Moncler (1 500 kr)", text)
+
+    def test_shipped_tips_file(self):
+        tips = vb.load_legit_tips(vb.HERE / "legit_tips.yaml")
+        self.assertGreaterEqual(len(tips["general"]), 3)
+        for brand, entry in tips["brands"].items():
+            self.assertTrue(entry["tips"], brand)
+            self.assertTrue(all(isinstance(x, str) and len(x) <= 160 for x in entry["tips"]), brand)
+        self.assertEqual(vb.brand_tips("Polo Ralph Lauren", tips), tips["brands"]["Ralph Lauren"])
+        self.assertEqual(vb.brand_tips("Essentials", tips), tips["brands"]["Fear of God Essentials"])
+        self.assertIn("code.moncler.com", vb.brand_tips("Moncler", tips)["official"]["url"])
+
+    def test_brand_alias(self):
+        self.assertEqual(vb.brand_tips("Essentials", LEGIT_TIPS)["tips"], ["Kolla gummiloggan."])
+        self.assertEqual(vb.brand_tips("Fear of God Essentials", LEGIT_TIPS)["tips"], ["Kolla gummiloggan."])
+        self.assertEqual(vb.brand_tips("Nike", LEGIT_TIPS), {})
+
+    def test_item_id_in(self):
+        self.assertEqual(vb.item_id_in("https://www.vinted.fr/items/1234567-jacka?x=1"), 1234567)
+        self.assertEqual(vb.item_id_in(" 9876543 "), 9876543)
+        self.assertEqual(vb.item_id_in("legit:555555"), 555555)
+        self.assertIsNone(vb.item_id_in("hej"))
+        deal = {"caption": "🔥 Moncler – 900 kr", "reply_markup": {"inline_keyboard": [[
+            {"text": "Öppna på Vinted", "url": "https://www.vinted.se/items/7777777-x"}]]}}
+        self.assertEqual(vb.item_id_in(deal), 7777777)
+
+
+class FakeListingClient:
+    base = BASE
+
+    def __init__(self, body=None, error=None):
+        self.body, self.error, self.calls = body, error, []
+        self.retries, self.timeout = 2, 30.0
+
+    def fetch_listing_page(self, item_id):
+        self.calls.append(item_id)
+        if self.error:
+            raise self.error
+        return self.body
+
+
+class LegitTelegram(FakeTelegram):
+    def __call__(self, token, method, params=None, timeout=35):
+        if method == "answerCallbackQuery":
+            self.calls.append((token, method, params))
+            return True
+        return super().__call__(token, method, params, timeout)
+
+
+class LegitListenerTests(unittest.TestCase):
+    GROUP = "-1001"
+
+    def setUp(self):
+        self.cfg = make_cfg()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "bot.db"
+        self.store = vb.Store(self.db)
+        self.addCleanup(self.store.db.close)
+        self.api = LegitTelegram()
+        self.sent = []
+        patcher = mock.patch.object(vb, "http_post_json", side_effect=lambda url, payload, timeout=20: self.sent.append((url, payload)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.client = FakeListingClient(listing_page(price="900"))
+        self.listener = vb.LegitListener(TOKEN, self.db, self.cfg, legit_searches(self.cfg), LEGIT_TIPS,
+                                         fixed_chat=self.GROUP, api=self.api, client=self.client)
+
+    def poll(self, *updates):
+        self.api.updates = [list(updates)]
+        self.listener.poll(self.store)
+
+    def answered(self):
+        return [m for m in self.api.calls if m[1] == "answerCallbackQuery"]
+
+    def test_legit_command_with_link(self):
+        msg = tg_msg(10, int(self.GROUP), "/legit https://www.vinted.se/items/42-jacka", 7, 100, chat_type="supergroup")
+        msg["message"]["message_id"] = 55
+        self.poll(msg)
+        self.assertEqual(self.client.calls, [42])
+        (url, payload), = self.sent
+        self.assertTrue(url.endswith("/sendMessage"))
+        self.assertEqual(payload["chat_id"], self.GROUP)
+        self.assertIn("Legitcheck: Moncler – 900 kr", payload["text"])
+        self.assertEqual(payload["reply_parameters"]["message_id"], 55)
+        self.assertEqual(self.listener.offset, 11)
+
+    def test_only_own_chats_get_answers(self):
+        self.poll(tg_msg(10, -999, "/legit https://www.vinted.se/items/42", 7, 100, chat_type="group"))
+        self.assertEqual((self.client.calls, self.sent), ([], []))
+
+    def test_button_and_no_double_answer(self):
+        query = {"update_id": 20, "callback_query": {"id": "q1", "from": {"id": 7}, "data": "legit:42",
+                 "message": {"message_id": 9, "chat": {"id": int(self.GROUP), "type": "supergroup"}}}}
+        self.poll(query)
+        self.assertEqual(len(self.answered()), 1)
+        self.assertEqual(len(self.sent), 1)
+        self.poll(query)                                  # samma uppdatering igen (t.ex. nästa körning)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_reply_to_deal_with_legit(self):
+        msg = tg_msg(11, int(self.GROUP), "/legit@fyndbot", 7, 100, chat_type="supergroup")
+        msg["message"]["reply_to_message"] = {"caption": "🔥", "reply_markup": {"inline_keyboard": [[
+            {"text": "Öppna på Vinted", "url": "https://www.vinted.se/items/4242424-x"}]]}}
+        self.poll(msg)
+        self.assertEqual(self.client.calls, [4242424])
+
+    def test_link_on_next_line(self):
+        self.poll(tg_msg(18, int(self.GROUP), "/legit\nhttps://www.vinted.se/items/42-jacka", 7, 100, chat_type="supergroup"))
+        self.assertEqual(self.client.calls, [42])
+
+    def test_commands_for_other_bots_are_ignored(self):
+        self.listener.username = "fyndbot"
+        self.poll(tg_msg(19, int(self.GROUP), "/legit@annanbot https://www.vinted.se/items/42", 7, 100, chat_type="supergroup"),
+                  tg_msg(20, int(self.GROUP), "/help", 8, 100, chat_type="supergroup"))
+        self.assertEqual((self.client.calls, self.sent), ([], []))
+        self.poll(tg_msg(21, int(self.GROUP), "/help@fyndbot", 8, 100, chat_type="supergroup"))
+        self.assertEqual(len(self.sent), 1)
+
+    def test_help_and_missing_link(self):
+        self.poll(tg_msg(12, int(self.GROUP), "/hjalp", 7, 100, chat_type="supergroup"),
+                  tg_msg(13, int(self.GROUP), "/legit", 8, 100, chat_type="supergroup"))
+        self.assertEqual(len(self.sent), 2)
+        self.assertTrue(all("Skriv /legit följt av en länk" in p["text"] for _, p in self.sent))
+        self.assertEqual(self.client.calls, [])
+
+    def test_vinted_problems_are_explained(self):
+        self.client.error = vb.Blocked("HTTP 429")
+        self.poll(tg_msg(14, int(self.GROUP), "/legit 42424242", 7, 100, chat_type="supergroup"))
+        self.client.error, self.client.body = None, None
+        self.poll(tg_msg(15, int(self.GROUP), "/legit 42424243", 8, 100, chat_type="supergroup"))
+        texts = [p["text"] for _, p in self.sent]
+        self.assertIn("Vinted svarar inte just nu", texts[0])
+        self.assertIn("Hittade inte annonsen", texts[1])
+
+    def test_same_person_cannot_spam(self):
+        self.poll(tg_msg(16, int(self.GROUP), "/legit 42424242", 7, 100, chat_type="supergroup"),
+                  tg_msg(17, int(self.GROUP), "/legit 42424242", 7, 101, chat_type="supergroup"))
+        self.assertEqual(len(self.client.calls), 1)
+
+    def test_confirm_acknowledges_handled_updates(self):
+        self.poll(tg_msg(30, int(self.GROUP), "hej", 7, 100, chat_type="supergroup"))
+        self.listener.confirm()
+        self.assertEqual(self.api.calls[-1][1:], ("getUpdates", {"offset": 31, "timeout": 0}))
+
+    def test_owner_private_chat_allowed_via_discovery(self):
+        key = vb.telegram_chat_key(TOKEN)
+        for suffix, value in (("", self.GROUP), (":owner", "7"), (":private", "7")):
+            self.store.set_setting(key + suffix, value)
+        listener = vb.LegitListener(TOKEN, self.db, self.cfg, legit_searches(self.cfg), LEGIT_TIPS,
+                                    api=self.api, client=self.client)
+        self.api.updates = [[tg_msg(40, 7, "/legit 42424242", 7, 100)]]
+        listener.poll(self.store)
+        self.assertEqual(self.sent[-1][1]["chat_id"], "7")
+
+    def test_deal_button_only_when_listening(self):
+        msg = vb.Message("🔥 Moncler", ["x"], f"{BASE}/items/123-jacka")
+        vb.TelegramNotifier(TOKEN, self.GROUP, legit_button=True).send(msg)
+        vb.TelegramNotifier(TOKEN, self.GROUP).send(msg)
+        with_button, without = (p["reply_markup"]["inline_keyboard"][0] for _, p in self.sent)
+        self.assertEqual(with_button[1], {"text": "🔍 Legitcheck", "callback_data": "legit:123"})
+        self.assertEqual(len(without), 1)
+
+    def test_run_stops_in_time_without_busy_looping(self):
+        clock = [0.0]
+
+        def api(token, method, params=None, timeout=35):
+            self.api.calls.append((token, method, params))
+            clock[0] += (params or {}).get("timeout", 0) or 0.01   # long polling tar sin tid
+            return [] if method == "getUpdates" else True
+
+        listener = vb.LegitListener(TOKEN, self.db, self.cfg, [], {}, fixed_chat=self.GROUP, api=api, client=self.client)
+        with mock.patch.object(vb.time, "monotonic", side_effect=lambda: clock[0]):
+            listener.run(until=60)
+        polls = [c[2]["timeout"] for c in self.api.calls if c[1] == "getUpdates"]
+        self.assertEqual(polls, [25, 25, 4])                # aldrig timeout 0 i en loop
+        self.assertLessEqual(clock[0], 60)
+
+    def test_discovery_uses_given_updates(self):
+        api = mock.Mock(side_effect=AssertionError("ska inte hämta själv"))
+        self.assertIsNone(vb.discover_telegram_chat(TOKEN, None, self.cfg, api, updates=[]))
+
+    def test_listen_option_is_validated(self):
+        for bad in ("0", "-1", "nan"):
+            with self.assertLogs("vinted-bot", "ERROR"):
+                self.assertEqual(vb.main(["--lyssna", bad, "--dry-run"]), 2, bad)
 
 
 if __name__ == "__main__":

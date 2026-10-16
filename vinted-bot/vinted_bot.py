@@ -27,6 +27,7 @@ import re
 import sqlite3
 import statistics
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -118,14 +119,18 @@ def hashtag(text: str) -> str:
     return "#" + "".join(p[:1].upper() + p[1:] for p in parts) if parts else ""
 
 
-# Inte "utan" ("inte äkta utan kopia") eller "no" (för tvetydigt).
-_NEGATIONS = {"ingen", "inga", "inte", "ej", "not", "non"}
+# Inte "utan" – "inte äkta utan kopia" betyder att det ÄR en kopia.
+_NEGATIONS = ("ingen", "inga", "inget", "inte", "ej", "not", "non", "no")
+_FILLER = ("en", "ett", "a", "an", "nan", "nagon", "nagot", "nagra", "some", "any")
+_NEGATED_BEFORE = re.compile(r"(?<!\w)(?:%s)\s+(?:(?:%s)\s+)?$" % ("|".join(_NEGATIONS), "|".join(_FILLER)))
 
 
-def negated(text: str, pos: int) -> bool:
-    """Står ett nekande ord precis före positionen, med bara mellanslag emellan? ("äkta, ingen kopia")"""
-    m = re.search(r"(\w+)\s+$", text[:pos])
-    return bool(m) and m.group(1) in _NEGATIONS
+def negated(text: str, pos: int, extra: tuple[str, ...] = ()) -> bool:
+    """Står ett nekande ord före positionen, med högst ett småord emellan? ("äkta, inte en kopia")
+    Texten ska vara fold():ad. extra = fler nekande ord, t.ex. "utan" ("utan kvitto")."""
+    if _NEGATED_BEFORE.search(text[:pos]):
+        return True
+    return bool(extra) and bool(re.search(r"(?<!\w)(?:%s)\s+$" % "|".join(map(re.escape, extra)), text[:pos]))
 
 
 def keyword_re(keyword: str) -> re.Pattern:
@@ -479,6 +484,27 @@ class VintedClient:
                 time.sleep(wait)
         raise AssertionError("unreachable")
 
+    def fetch_listing_page(self, item_id: int) -> str | None:
+        """Annonssidan, för legitcheck. None om annonsen inte finns (såld och borttagen)."""
+        body = None
+        for rsc in (True, False):
+            headers = {"RSC": "1", "Accept": "*/*"} if rsc else {"Accept": "text/html,application/xhtml+xml"}
+            try:
+                resp = self.session.get(f"{self.base}/items/{item_id}", headers=headers, timeout=self.timeout)
+            except Exception as e:
+                raise FetchError(f"nätverksfel: {e}") from None
+            if resp.status_code in (401, 403, 429):
+                self._new_session()
+                raise Blocked(f"HTTP {resp.status_code}")
+            if resp.status_code in (404, 410):
+                return None
+            if resp.status_code != 200:
+                raise FetchError(f"HTTP {resp.status_code}")
+            body = resp.text
+            if '"user_info_header"' in body or '"attributes"' in body:
+                return body
+        return body
+
     def _fetch_once(self, search: Search, page: int, params: list[tuple[str, str]]) -> list[Item]:
         for rsc in (True, False):
             headers = {"RSC": "1", "Accept": "*/*"} if rsc else {"Accept": "text/html,application/xhtml+xml"}
@@ -640,8 +666,9 @@ class TelegramNotifier:
     name = "Telegram"
 
     def __init__(self, token: str, chat_id: str, on_migrate=None, fallback_chat: str | None = None,
-                 hint_gate=None):
+                 hint_gate=None, legit_button: bool = False):
         self.api = f"https://api.telegram.org/bot{token}"
+        self.legit_button = legit_button  # bara när LegitListener lyssnar, annars gör knappen inget
         self.chat_id = chat_id
         self.on_migrate = on_migrate  # anropas med nytt chat-id när en grupp blivit supergrupp
         self.fallback_chat = fallback_chat  # ägarens privata chatt, om boten inte får skriva i chat_id
@@ -662,7 +689,10 @@ class TelegramNotifier:
 
     def _deliver(self, msg: Message, chat_id: str | None = None) -> None:
         text = f"<b>{escape(msg.title)}</b>\n" + "\n".join(escape(line) for line in msg.lines)
-        markup = {"inline_keyboard": [[{"text": "Öppna på Vinted", "url": msg.url}]]}
+        buttons = [{"text": "Öppna på Vinted", "url": msg.url}]
+        if self.legit_button and (m := _ITEM_URL.search(msg.url)):
+            buttons.append({"text": "🔍 Legitcheck", "callback_data": f"legit:{m.group(1)}"})
+        markup = {"inline_keyboard": [buttons]}
         if msg.photo and len(text) <= 1024:  # bildtexter får vara max 1024 tecken
             try:
                 self._post("sendPhoto", {"photo": msg.photo, "caption": text, "parse_mode": "HTML",
@@ -744,7 +774,15 @@ class NtfyNotifier:
         http_post_json(self.server + "/", payload)
 
 
-def build_notifiers(cfg: dict, store: "Store | None" = None) -> list:
+def telegram_settings(cfg: dict) -> tuple[str | None, str]:
+    """(token, fast chat-id) från miljön/.env eller config.yaml."""
+    tg = (cfg.get("notify") or {}).get("telegram") or {}
+    token = os.environ.get("TELEGRAM_BOT_TOKEN") or str(tg.get("bot_token") or "").strip()
+    chat = os.environ.get("TELEGRAM_CHAT_ID") or str(tg.get("chat_id") or "").strip()
+    return clean_token(token), chat.strip().strip("\"'<>")
+
+
+def build_notifiers(cfg: dict, store: "Store | None" = None, legit_button: bool = False) -> list:
     conf = cfg.get("notify") or {}
     tg = conf.get("telegram") or {}
 
@@ -765,7 +803,8 @@ def build_notifiers(cfg: dict, store: "Store | None" = None) -> list:
                 remember = lambda new_id: store.set_setting(telegram_chat_key(token), new_id)  # noqa: E731
                 fallback = store.get_setting(telegram_chat_key(token) + ":private") or None
             notifiers.append(TelegramNotifier(token, chat, on_migrate=remember, fallback_chat=fallback,
-                                              hint_gate=daily_gate(store, telegram_chat_key(token) + ":hint")))
+                                              hint_gate=daily_gate(store, telegram_chat_key(token) + ":hint"),
+                                              legit_button=legit_button))
     if webhook := setting("DISCORD_WEBHOOK_URL", conf.get("discord_webhook")):
         notifiers.append(DiscordNotifier(webhook))
     if topic := setting("NTFY_TOPIC", conf.get("ntfy_topic")):
@@ -889,7 +928,8 @@ def telegram_chat_key(token: str) -> str:
     return f"telegram_chat:{token.split(':')[0]}"
 
 
-def discover_telegram_chat(token: str, store: "Store | None", cfg: dict, api=None) -> str | None:
+def discover_telegram_chat(token: str, store: "Store | None", cfg: dict, api=None,
+                           updates: list | None = None) -> str | None:
     """Vart fynden ska skickas när TELEGRAM_CHAT_ID inte är satt. Gör att det räcker att lägga in token,
     t.ex. som hemlighet i GitHub Actions.
 
@@ -907,11 +947,12 @@ def discover_telegram_chat(token: str, store: "Store | None", cfg: dict, api=Non
     private = get(":private")
     if saved and not owner and not saved.startswith("-"):
         owner = private = saved  # sparad av en äldre version: privat chatt-id = ägarens användar-id
-    try:
-        updates = api(token, "getUpdates", {"timeout": 0}, timeout=20) or []
-    except TelegramError as e:
-        log.warning("Telegram: %s", e)
-        return saved
+    if updates is None:  # annars kommer de från legitcheck-lyssnaren, som redan hämtat dem
+        try:
+            updates = api(token, "getUpdates", {"timeout": 0}, timeout=20) or []
+        except TelegramError as e:
+            log.warning("Telegram: %s", e)
+            return saved
     seen_raw = get(":seen")
     seen = tuple(int(x) for x in seen_raw.split(":")) if seen_raw else (0, 0)
     events = [e for e in telegram_events(updates) if e.when > seen]
@@ -1244,6 +1285,428 @@ class Store:
 
 
 # --------------------------------------------------------------------------
+# Legitcheck – riskbedömning av en annons ("är den äkta?")
+# --------------------------------------------------------------------------
+#
+# Ingen bot kan se på bilder om ett plagg är äkta. Legitcheck väger ihop varningssignaler – priset jämfört
+# med vad märket brukar kosta, säljarens omdömen, ord i annonsen och antal bilder – och lägger till
+# märkets egen checklista ur legit_tips.yaml. Svarar på /legit och knappen "🔍 Legitcheck" i fynd-chatten.
+
+_ITEM_URL = re.compile(r"/items/(\d+)")
+_FAKE_WORDS = ["replica", "replika", "fake", "kopia", "dupe", "1:1", "aaa", "look alike", "podróbka", "nachbau"]
+_WEAK_FAKE_WORDS = ["copy", "mirror", "inspired", "inspirerad"]  # ofta något annat: "inspired by the 90s"
+# Fraser som innehåller kopie-ord utan att handla om plagget.
+_HARMLESS = re.compile(r"(?<!\w)(?:fake fur|fake leather|fake suede|faux \w+|kopia (?:pa|av) (?:kvitto\w*|kvittot)"
+                       r"|copy of (?:the |my )?receipt)(?!\w)")
+_UNSURE_WORDS = ["vet ej om äkta", "vet inte om äkta", "vet inte om den är äkta", "okänd äkthet",
+                 "not sure if real", "not sure if authentic", "no idea if real", "kan inte garantera äkthet"]
+_PROOF_WORDS = ["kvitto", "kvittot", "receipt", "paragon", "certilogo", "qr", "qr-kod", "nfc",
+                "äkthetsbevis", "äkthetscertifikat"]
+
+
+@dataclass
+class Listing:
+    """Det legitcheck behöver från en annonssida."""
+    id: int
+    url: str
+    title: str = ""
+    brand: str = ""
+    size: str = ""
+    condition: str = ""
+    description: str = ""
+    photos: int = 0
+    price: float | None = None          # säljarens pris i kronor (Vinted räknar om utländska priser)
+    seller_reviews: int | None = None
+    seller_rating: float | None = None  # 0–1
+    business: bool = False
+    catalog_ids: list[int] = field(default_factory=list)  # kategorierna från Herr ner till annonsens
+    verification_offered: bool = False  # Vinted erbjuder äkthetskontroll för annonsen
+    reserved: bool = False
+
+
+def parse_listing(body: str, base_url: str, item_id: int) -> Listing | None:
+    """Läser en annonssida (RSC eller HTML). None om sidan inte känns igen."""
+    if "self.__next_f.push" in body:
+        body = "".join(json.loads(m.group(1)) for m in _NEXT_F.finditer(body))
+    decoder = json.JSONDecoder()
+    plugins: dict[str, dict] = {}  # sidans delar: "attributes", "description", "user_info_header" …
+    for m in re.finditer(r'\{"data":', body):
+        try:
+            obj, _ = decoder.raw_decode(body, m.start())
+        except ValueError:
+            continue
+        if isinstance(obj.get("name"), str) and isinstance(obj.get("data"), dict):
+            plugins.setdefault(obj["name"], obj["data"])
+    if "attributes" not in plugins and "user_info_header" not in plugins:
+        return None
+    pricing: dict = {}
+    for m in re.finditer(r'\{"pricingServices":', body):
+        try:
+            obj, _ = decoder.raw_decode(body, m.start())
+        except ValueError:
+            continue
+        if isinstance(obj.get("pricingServices"), dict) and "originalAskingAmount" in obj["pricingServices"]:
+            pricing = obj["pricingServices"]
+            break
+
+    attrs = {a.get("code"): _txt((a.get("data") or {}).get("value"))
+             for a in (plugins.get("attributes") or {}).get("attributes") or [] if isinstance(a, dict)}
+    seller = plugins.get("user_info_header") or {}
+    summary = (plugins.get("summary") or {}).get("lines") or []
+    title = ""
+    if summary and isinstance(summary[0], dict):
+        title = _txt(next((e.get("value") for e in summary[0].get("elements") or [] if isinstance(e, dict)), ""))
+    asking = pricing.get("originalAskingAmount") or {}
+    crumbs = (plugins.get("breadcrumbs") or {}).get("breadcrumbs") or []
+    rating = _amount(seller.get("feedback_reputation"))
+    reviews = seller.get("feedback_count")
+    return Listing(
+        id=item_id,
+        url=f"{base_url}/items/{item_id}",
+        title=title or _txt((plugins.get("gallery") or {}).get("accessibility_label")),
+        brand=attrs.get("brand", ""),
+        size=attrs.get("size", ""),
+        condition=attrs.get("status", ""),
+        description=_txt((plugins.get("description") or {}).get("description")),
+        photos=len((plugins.get("gallery") or {}).get("photos") or []),
+        price=_amount(asking) if asking.get("currencyCode") in ("SEK", None) else None,
+        seller_reviews=int(reviews) if isinstance(reviews, (int, float)) else None,
+        seller_rating=rating,
+        business=bool(seller.get("business")),
+        catalog_ids=list(dict.fromkeys(int(c) for crumb in crumbs if isinstance(crumb, dict)
+                                       for c in re.findall(r"/catalog/(\d+)", str(crumb.get("url") or "")))),
+        verification_offered=bool((pricing.get("services") or {}).get("itemVerification")),
+        reserved=bool((plugins.get("ask_seller") or {}).get("is_reserved")),
+    )
+
+
+def load_legit_tips(path: Path) -> dict:
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        return {}
+
+
+def brand_tips(brand: str, tips: dict) -> dict:
+    """Märkets checklista ur legit_tips.yaml (längsta matchande namn vinner), eller {}."""
+    brand_words = words(brand)
+    best: tuple[int, dict] = (0, {})
+    for key, entry in (tips.get("brands") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        for name in [key, *(entry.get("aliases") or [])]:
+            key_words = tuple(words(str(name)))
+            if len(key_words) > best[0] and contains_words(brand_words, key_words):
+                best = (len(key_words), entry)
+    return best[1]
+
+
+_MISSING_AFTER = re.compile(r"^\s+(?:saknas|finns (?:ej|inte)|missing|not included)(?!\w)")
+
+
+def _found(words_list: list[str], text: str, proof: bool = False) -> list[str]:
+    """Orden som står i texten utan att vara nekade. proof: även "utan kvitto" och "kvitto saknas" räknas bort."""
+    hits = []
+    for word in words_list:
+        for m in keyword_re(word).finditer(text):
+            if negated(text, m.start(), ("utan", "without") if proof else ()):
+                continue
+            if proof and _MISSING_AFTER.search(text[m.end():]):
+                continue
+            hits.append(word)
+            break
+    return hits
+
+
+def legit_check(listing: Listing, searches: list[Search], tips: dict) -> Message:
+    """Riskbedömning av annonsen: varningssignaler, det som talar för, och märkets checklista."""
+    bad: list[tuple[int, str]] = []
+    good: list[str] = []
+    brand = listing.brand or "märket"
+
+    # Priset jämfört med vad märket brukar säljas för i samma kategori (säljvärdet i config.yaml).
+    # Den sökning vars kategori ligger djupast i annonsens kategoriväg gäller, och märkets egen regel
+    # går före "övriga märken".
+    rule, best = None, (-1, False)
+    for s in searches:
+        r = s.rule_for(listing.brand)
+        depth = max((listing.catalog_ids.index(c) for c in s.catalog_ids if c in listing.catalog_ids), default=-1)
+        if r and not r.skip and depth >= 0 and (depth, r is not s.other_brands) > best:
+            rule, best = r, (depth, r is not s.other_brands)
+    if rule and listing.price:
+        ratio = listing.price / rule.resale
+        if rule.suspicious_below and listing.price < rule.suspicious_below:
+            bad.append((3, f"Priset ({money(listing.price)} kr) är under gränsen där kopior är vanliga för "
+                           f"{brand} ({money(rule.suspicious_below)} kr)"))
+        elif ratio < 0.4:
+            bad.append((2, f"Priset är {1 - ratio:.0%} under vad {brand} brukar säljas för (~{money(rule.resale)} kr)"))
+        elif ratio < 0.6:
+            bad.append((1, f"Priset är {1 - ratio:.0%} under vad {brand} brukar säljas för (~{money(rule.resale)} kr)"))
+        elif ratio >= 0.9:
+            good.append(f"Priset ligger i nivå med vad {brand} brukar säljas för (~{money(rule.resale)} kr)")
+        if ratio < 0.6 and fold(listing.condition) == fold("Ny med prislapp"):
+            bad.append((1, "Ny med prislapp men långt under normalpris"))
+
+    # Säljaren.
+    reviews, rating = listing.seller_reviews, listing.seller_rating
+    if reviews == 0:
+        bad.append((2, "Säljaren har inga omdömen"))
+    elif reviews is not None and reviews < 5:
+        bad.append((1, f"Säljaren har bara {reviews} omdömen"))
+    if reviews and reviews >= 5 and rating is not None and rating < 0.8:
+        bad.append((2, f"Säljaren har lågt betyg ({rating * 5:.1f}/5)"))
+    elif reviews and reviews >= 20 and rating is not None and rating >= 0.9:
+        good.append(f"Säljaren har {reviews} omdömen, snitt {rating * 5:.1f}/5")
+
+    # Ord i titel och beskrivning.
+    # Meningsslut behålls (fold tar bort punkter): "Kvitto finns. Inte fake." är två påståenden.
+    text = _HARMLESS.sub(" ", fold(re.sub(r"[.!?]+", " ; ", f"{listing.title} ; {listing.description}")))
+    fake = _found(_FAKE_WORDS, text)
+    if fake:
+        bad.append((4, "Annonsen innehåller " + ", ".join(f"'{w}'" for w in fake)))
+    elif weak := _found(_WEAK_FAKE_WORDS, text):
+        bad.append((2, "Annonsen innehåller " + ", ".join(f"'{w}'" for w in weak) + " – kolla vad som menas"))
+    if _found(_UNSURE_WORDS, text):
+        bad.append((2, "Säljaren skriver att hen inte vet om plagget är äkta"))
+    if not fake and (proof := _found(_PROOF_WORDS, text, proof=True)):
+        bad.append((-1, ""))
+        good.append("Säljaren nämner " + ", ".join(proof))
+
+    # Bilder.
+    if listing.photos < 3:
+        bad.append((1, f"Bara {listing.photos} bild{'er' if listing.photos != 1 else ''}"))
+    elif listing.photos >= 8:
+        good.append(f"{listing.photos} bilder")
+
+    score = max(sum(points for points, _ in bad), 4 if fake else 0)  # säger annonsen själv "replica" är risken hög
+    level = "🔴 Hög" if score >= 4 else ("🟡 Medel" if score >= 2 else "🟢 Låg")
+    price = f" – {money(listing.price)} kr" if listing.price else ""
+    lines = [" · ".join(x for x in (listing.title, listing.size, listing.condition) if x),
+             f"Risk för kopia: {level}", ""]
+    warnings = [why for points, why in bad if points > 0]
+    if warnings:
+        lines += ["⚠️ Varningssignaler"] + [f"• {w}" for w in warnings]
+    if good:
+        lines += ["✅ Talar för"] + [f"• {g}" for g in good]
+    if listing.verification_offered:
+        lines.append("🛡 Vinted erbjuder äkthetskontroll för den här annonsen – välj den när du köper.")
+    if listing.reserved:
+        lines.append("⏳ Annonsen är reserverad.")
+
+    entry = brand_tips(listing.brand, tips)
+    checklist = list(entry.get("tips") or [])[:5] or list(tips.get("general") or [])[:4]
+    if checklist:
+        lines += ["", f"📋 Be säljaren om bilder och kolla ({brand if entry else 'allmänt'})"]
+        lines += [f"• {t}" for t in checklist]
+    official = entry.get("official") or {}
+    if official.get("url"):
+        lines.append(f"🔗 {official.get('name') or 'Officiell kontroll'}: {official['url']}"
+                     + (f" – {official['how']}" if official.get("how") else ""))
+    if entry and tips.get("general"):
+        lines += ["", "ℹ️ " + str(tips["general"][0])]
+    lines += ["", "Boten kan inte se på bilderna om plagget är äkta. Det här är en riskbedömning, "
+                  "inte en garanti."]
+    return Message(f"🔍 Legitcheck: {listing.brand or 'okänt märke'}{price}", lines, listing.url)
+
+
+def legit_help() -> Message:
+    return Message("🔍 Legitcheck", [
+        "Skriv /legit följt av en länk till en Vinted-annons, eller svara på ett fynd med /legit.",
+        "Du kan också trycka på knappen 🔍 Legitcheck under ett fynd.",
+        "Boten väger ihop pris, säljarens omdömen, ord i annonsen och antal bilder, och visar vad du ska "
+        "kolla för just det märket. Den kan inte se på bilderna om plagget är äkta.",
+    ], "https://www.vinted.se/")
+
+
+def item_id_in(value) -> int | None:
+    """Annons-id ur en länk, ett meddelande eller ett knappsvar."""
+    if isinstance(value, str):
+        if m := _ITEM_URL.search(value) or re.fullmatch(r"\s*(?:legit:)?(\d{6,})\s*", value):
+            return int(m.group(1))
+        return None
+    if not isinstance(value, dict):
+        return None
+    texts = [value.get("text"), value.get("caption")]
+    texts += [e.get("url") for e in (value.get("entities") or []) + (value.get("caption_entities") or [])
+              if isinstance(e, dict)]
+    for row in ((value.get("reply_markup") or {}).get("inline_keyboard") or []):
+        texts += [b.get("url") or b.get("callback_data") for b in row if isinstance(b, dict)]
+    for text in texts:
+        if isinstance(text, str) and (m := _ITEM_URL.search(text) or re.fullmatch(r"legit:(\d+)", text)):
+            return int(m.group(1))
+    return None
+
+
+class LegitListener:
+    """Lyssnar på Telegram (long polling) och svarar på /legit och knappen "🔍 Legitcheck".
+
+    Körs i en egen tråd medan boten söker. Bara fynd-chatten och ägarens privata chatt får svar.
+    """
+
+    def __init__(self, token: str, db_path: Path, cfg: dict, searches: list[Search], tips: dict,
+                 fixed_chat: str | None = None, api=None, client=None):
+        self.token, self.db_path, self.cfg = token, db_path, cfg
+        self.searches, self.tips, self.fixed_chat = searches, tips, fixed_chat
+        self.api = api or telegram_api
+        self.client = client or VintedClient(cfg["domain"], cfg["currency"], cfg["impersonate"])
+        self.client.retries, self.client.timeout = 0, 20.0
+        self.offset: int | None = None
+        self.recent: list[float] = []            # när kontrollerna gjordes – skydd mot spam
+        self.last_by_user: dict = {}
+        self.username = ""                       # bottens användarnamn, för /legit@annanbot
+        self.errors = 0                          # fel i rad från Telegram – väntar längre och längre
+
+    def run(self, until: float | None = None) -> None:
+        """Lyssnar tills time.monotonic() når until (None = för alltid)."""
+        store = Store(self.db_path)  # egen anslutning, eftersom lyssnaren har en egen tråd
+        try:
+            try:
+                me = self.api(self.token, "getMe", None, timeout=10)
+                self.username = str(me.get("username") or "") if isinstance(me, dict) else ""
+            except TelegramError:
+                pass
+            try:  # visas i Telegrams kommandomeny när man skriver /
+                self.api(self.token, "setMyCommands", {"commands": json.dumps([
+                    {"command": "legit", "description": "Riskbedömning av en Vinted-annons (skicka länken)"},
+                    {"command": "hjalp", "description": "Hur legitcheck fungerar"}])}, timeout=10)
+            except TelegramError:
+                pass
+            while True:
+                left = None if until is None else until - time.monotonic() - 5
+                if left is not None and left < 1:
+                    break  # (timeout 0 skulle bli en snabb loop mot Telegram)
+                self.poll(store, 25 if left is None else int(min(25, left)))
+            self.confirm()
+        except Exception:
+            log.exception("Legitcheck: oväntat fel – slutar lyssna")
+        finally:
+            store.db.close()
+
+    def poll(self, store: "Store", wait: int = 0) -> None:
+        params: dict = {"timeout": max(0, wait)}
+        if self.offset is not None:
+            params["offset"] = self.offset  # bekräftar det som redan hanterats
+        try:
+            updates = self.api(self.token, "getUpdates", params, timeout=max(0, wait) + 15) or []
+        except TelegramError as e:
+            # 409: någon annan lyssnar på samma bot just nu (t.ex. boten körs även på en egen dator).
+            self.errors += 1
+            if self.errors == 1:
+                log.warning("Legitcheck: Telegram svarade inte (%s) – försöker igen", e.description or e.code)
+            time.sleep(30 if e.code == 409 else min(60, 5 * 2 ** (self.errors - 1)))
+            return
+        self.errors = 0
+        if not updates:
+            return
+        self.offset = max(int(u.get("update_id", 0)) for u in updates) + 1
+        if not self.fixed_chat:
+            discover_telegram_chat(self.token, store, self.cfg, self.api, updates=updates)  # /vinted, ny grupp …
+        handled = json.loads(store.get_setting("legit:handled") or "[]")
+        for update in updates:
+            if update.get("update_id") in handled:
+                continue  # redan besvarad i en tidigare körning
+            try:
+                self.handle(update, store)
+            except Exception:
+                log.exception("Legitcheck: kunde inte svara")
+            handled = (handled + [update.get("update_id")])[-300:]
+            store.set_setting("legit:handled", json.dumps(handled))  # direkt, ifall körningen tar slut mitt i
+
+    def confirm(self) -> None:
+        """Säger till Telegram att allt hittills är hanterat, så att nästa körning inte svarar igen."""
+        if self.offset is not None:
+            try:
+                self.api(self.token, "getUpdates", {"offset": self.offset, "timeout": 0}, timeout=20)
+            except TelegramError:
+                pass
+
+    def allowed_chats(self, store: "Store") -> set[str]:
+        key = telegram_chat_key(self.token)
+        return {c for c in (self.fixed_chat, store.get_setting(key), store.get_setting(key + ":private")) if c}
+
+    def handle(self, update: dict, store: "Store") -> None:
+        allowed = self.allowed_chats(store)
+        query = update.get("callback_query")
+        if isinstance(query, dict):  # knappen "🔍 Legitcheck" under ett fynd
+            msg = query.get("message") or {}
+            chat = str((msg.get("chat") or {}).get("id", ""))
+            m = re.fullmatch(r"legit:(\d+)", str(query.get("data") or ""))
+            item_id = int(m.group(1)) if m else None
+            ok = item_id and chat in allowed
+            self.answer(query, "Kollar annonsen …" if ok else "")
+            if ok:
+                self.check(item_id, chat, msg.get("message_id"), (query.get("from") or {}).get("id"))
+            return
+        msg = update.get("message")
+        if not isinstance(msg, dict):
+            return
+        text = str(msg.get("text") or "").strip()
+        parts = text.split(maxsplit=1)
+        command, _, addressee = (parts[0].lower().partition("@") if text.startswith("/") else ("", "", ""))
+        chat = str((msg.get("chat") or {}).get("id", ""))
+        if addressee and self.username and addressee != self.username.lower():
+            return  # kommandot gäller en annan bot i gruppen
+        if command == "/help" and not addressee:
+            return  # vanligt kommando för andra botar – svara bara på /help@dennabot
+        if command not in ("/legit", "/hjalp", "/help") or chat not in allowed:
+            return
+        if command != "/legit":
+            self.reply(chat, msg.get("message_id"), legit_help())
+            return
+        item_id = item_id_in(parts[1] if len(parts) > 1 else "") or item_id_in(msg.get("reply_to_message"))
+        if not item_id:
+            self.reply(chat, msg.get("message_id"), legit_help())
+            return
+        self.check(item_id, chat, msg.get("message_id"), (msg.get("from") or {}).get("id"))
+
+    def check(self, item_id: int, chat: str, reply_to, user) -> None:
+        now = time.monotonic()
+        if user is not None and now - self.last_by_user.get(user, -1e9) < 5:
+            return  # samma person tryckte flera gånger
+        self.recent = [t for t in self.recent if now - t < 600]
+        url = f"https://www.{self.cfg['domain']}/items/{item_id}"
+        if len(self.recent) >= 30:
+            self.reply(chat, reply_to, Message("🔍 Legitcheck", ["Många kontroller just nu – vänta några minuter."], url))
+            return
+        self.last_by_user[user] = now
+        self.recent.append(now)
+        try:
+            body = self.client.fetch_listing_page(item_id)
+        except Blocked:
+            self.reply(chat, reply_to, Message("🔍 Legitcheck", ["Vinted svarar inte just nu – försök igen om en stund."], url))
+            return
+        except FetchError as e:
+            self.reply(chat, reply_to, Message("🔍 Legitcheck", [f"Kunde inte hämta annonsen ({e})."], url))
+            return
+        listing = parse_listing(body, self.client.base, item_id) if body else None
+        if listing is None:
+            self.reply(chat, reply_to, Message("🔍 Legitcheck", ["Hittade inte annonsen – den kan vara såld eller borttagen."], url))
+            return
+        self.reply(chat, reply_to, legit_check(listing, self.searches, self.tips))
+        log.info("Legitcheck: svarade på en kontroll")
+
+    def reply(self, chat: str, reply_to, msg: Message) -> None:
+        text = f"<b>{escape(msg.title)}</b>\n" + "\n".join(escape(line) for line in msg.lines)
+        payload: dict = {"chat_id": chat, "text": text[:4096], "parse_mode": "HTML",
+                         "link_preview_options": {"is_disabled": True},
+                         "reply_markup": {"inline_keyboard": [[{"text": "Öppna på Vinted", "url": msg.url}]]}}
+        if reply_to:
+            payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+        try:
+            http_post_json(f"https://api.telegram.org/bot{self.token}/sendMessage", payload)
+        except NotifyError as e:  # bara Telegrams förklaring – hela svaret kan innehålla chatt-id
+            log.warning("Legitcheck: kunde inte svara i Telegram (%s)", e.description if not QUIET else e.status)
+        except OSError as e:
+            log.warning("Legitcheck: kunde inte nå Telegram (%s)", e)
+
+    def answer(self, query: dict, text: str) -> None:
+        try:
+            self.api(self.token, "answerCallbackQuery", {"callback_query_id": query.get("id"), "text": text}, timeout=10)
+        except TelegramError:
+            pass  # för gammal knapptryckning – svaret kommer ändå som meddelande
+
+
+# --------------------------------------------------------------------------
 # Själva bevakningen
 # --------------------------------------------------------------------------
 
@@ -1453,6 +1916,7 @@ def calibrate(searches: list[Search], client: VintedClient, cfg: dict) -> None:
 # --------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
+    started = time.monotonic()
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
@@ -1468,6 +1932,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="visa aktuella medianpriser per märke")
     ap.add_argument("--test-notis", "--test-notify", dest="test_notify", action="store_true",
                     help="skicka en testnotis till alla inställda kanaler")
+    ap.add_argument("--legit", metavar="LÄNK", help="legitcheck av en Vinted-annons: skriver ut riskbedömningen")
+    ap.add_argument("--lyssna", "--listen", dest="listen", type=float, metavar="SEK",
+                    help="med --once: svara på /legit i Telegram i högst SEK sekunder från start (utan --once: hela tiden)")
     ap.add_argument("--meddela", dest="say", metavar="TEXT",
                     help="skicka TEXT till notiskanalerna, t.ex. ett larm från GitHub Actions")
     ap.add_argument("--telegram", action="store_true",
@@ -1501,6 +1968,9 @@ def main(argv: list[str] | None = None) -> int:
         cfg["delay_between_searches"] = list(args.pause)
     if args.time_budget is not None and not (math.isfinite(args.time_budget) and args.time_budget > 0):
         log.error("--max-tid SEK: ange ett positivt antal sekunder, t.ex. --max-tid 30")
+        return 2
+    if args.listen is not None and not (math.isfinite(args.listen) and args.listen > 0):
+        log.error("--lyssna SEK: ange ett positivt antal sekunder, t.ex. --lyssna 540")
         return 2
     if args.only:
         searches = [s for s in searches if fold(args.only) in fold(s.name)]
@@ -1550,6 +2020,22 @@ def main(argv: list[str] | None = None) -> int:
 
     debug_dir = Path(args.debug_dir) if args.debug_dir else None
     client = VintedClient(cfg["domain"], cfg["currency"], cfg["impersonate"], debug_dir)
+    if args.legit:
+        item_id = item_id_in(args.legit)
+        if not item_id:
+            log.error("--legit: ange en länk till en Vinted-annons (…/items/123456789-…)")
+            return 2
+        try:
+            body = client.fetch_listing_page(item_id)
+        except FetchError as e:
+            log.error("Kunde inte hämta annonsen: %s", e)
+            return 1
+        listing = parse_listing(body, client.base, item_id) if body else None
+        if listing is None:
+            log.error("Hittade inte annonsen – den kan vara såld eller borttagen.")
+            return 1
+        print_message(legit_check(listing, searches, load_legit_tips(HERE / "legit_tips.yaml")))
+        return 0
     if args.calibrate:
         calibrate(searches, client, cfg)
         return 0
@@ -1564,9 +2050,13 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Torrkörning klar: %d annonser skulle ha notifierats.", found)
         return 0
 
-    store = Store(Path(args.db) if args.db else config_path.parent / "vinted_bot.db")
+    db_path = Path(args.db) if args.db else config_path.parent / "vinted_bot.db"
+    store = Store(db_path)
     store.prune()
-    notifiers = build_notifiers(cfg, store)
+    token, fixed_chat = telegram_settings(cfg)
+    # Legitcheck: lyssna på Telegram medan boten kör – hela tiden i loop-läge, med --once bara med --lyssna.
+    listen = bool(token) and (not args.once or args.listen is not None)
+    notifiers = build_notifiers(cfg, store, legit_button=listen)
     if not notifiers:
         log.warning("Inga notiskanaler inställda – fynd skrivs bara ut här. Se README.md.")
     else:
@@ -1581,6 +2071,15 @@ def main(argv: list[str] | None = None) -> int:
     bot = Bot(cfg, searches, client, store, notifiers, time_budget=args.time_budget, queue_undelivered=configured)
     if args.once:
         bot.block_cooldown = 75.0  # bara om tidsgränsen räcker, se Bot._run_search_or_wait
+    listener = None
+    until = started + args.listen if args.once and args.listen else None
+    if listen:
+        listener = threading.Thread(
+            target=LegitListener(token, db_path, cfg, searches, load_legit_tips(HERE / "legit_tips.yaml"),
+                                 fixed_chat=fixed_chat or None).run,
+            args=(until,), name="legitcheck", daemon=True)
+        listener.start()
+        log.info("Legitcheck: svarar på /legit i Telegram%s.", f" i {args.listen:g} s" if until else "")
     try:
         if args.once:
             log.info("Klart: %d fynd.", bot.run_cycle())
@@ -1594,6 +2093,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except KeyboardInterrupt:
         log.info("Avslutar.")
+    finally:
+        if listener and until:  # --once --lyssna: fortsätt svara på /legit tills tiden är slut
+            listener.join(max(0.0, until - time.monotonic()) + 30)
     return 0
 
 

@@ -1,0 +1,153 @@
+# Legitcheck – vad du ska be säljaren fotografera, per märke.
+#
+# Tipsen kommer från märkenas egna sidor om kopior och från etablerade
+# äkthetsguider (oktober 2026). De visas när någon skriver /legit eller trycker
+# på "🔍 Legitcheck". Inget av dem bevisar ensamt att ett plagg är äkta.
+#
+#   general   allmänna råd (de första visas för märken utan egen lista)
+#   brands    märke: tips (max 5 visas), official (märkets egen kontroll), aliases
+#             (andra namn märket har på Vinted)
+
+general:
+  - "Tryck aldrig 'Allt är OK' innan du kollat lappar och koder – du har 2 dagar efter leveransbeskedet att trycka 'Jag har ett problem'."
+  - "Betala bara via 'Köp nu' på Vinted. Betalar du utanför (t.ex. Swish) har du inget köparskydd."
+  - "Be om säljarens egna foton i dagsljus: hela plagget, halslapp, alla tvättlappar (båda sidor), logga, dragkedja och knappar."
+  - "Kostar annonsen minst 1 100 kr och har diamantmärke? Lägg till Vinteds artikelverifiering (120 kr) i kassan."
+  - "Misstänkt kopia efter leverans? 'Jag har ett problem' → skicka foton på hela plagget, avvikande detaljer och alla tvättlappar."
+  - "Kvitton och äkthetskort är lätta att förfalska – be gärna om dem, men döm alltid på själva plagget."
+
+brands:
+  Moncler:
+    official:
+      name: Moncler
+      url: https://code.moncler.com
+      how: ange koden från kodlappen (eller skanna QR/NFC) – modellnamnet ska matcha plagget
+    tips:
+      - "Be om foto på kodlappen inuti (kod + QR) och kolla koden på code.moncler.com – modellnamnet ska matcha plagget."
+      - "Kodlappen ska passa årgången: 2009–12 Certilogo-lapp, från 2013 Monclers QR-lapp, från SS16 även NFC-tagg."
+      - "Be om närbild på filtloggan på ärmen: rundad form, jämnt och tunt broderi, text som följer bågen."
+      - "Be om foto på tvättlappen med serieankan: dova, matta färger. Starka, skarpa färger är en varningssignal."
+      - "Be om foto på dragkedjan: präglat märke som Lampo eller Riri. Omärkt eller lätt och tunn dragkedja = varning."
+
+  Canada Goose:
+    tips:
+      - "Be om video där hologramlappen i fodret vinklas: på jackor från hösten 2017 ska en isbjörn synas."
+      - "Be om närbild på Arctic Disc-märket på ärmen: jämnt broderi, rätt formade lönnlöv, rätt stavat CANADA och ARCTIC."
+      - "Be om foto på den blå kvalitetslappen och tvättlappen och jämför typsnittet med en äkta jacka av samma modell."
+      - "Pälskrage (bara äldre jackor): ska vara tät och fyllig med jämn söm. Tovig, gles päls = varning."
+
+  Moose Knuckles:
+    official:
+      name: Moose Knuckles
+      url: https://www.mooseknucklescanada.com/pages/check-authenticity
+      how: skanna NFC-taggen i sidsömmen med mobilen
+    tips:
+      - "Be säljaren skärminspela när NFC-taggen i sidsömmen skannas med mobilen – sidan ska bekräfta äktheten. Ingen tagg = trolig kopia."
+      - "Be om foto på de broderade hockeyspelarna inuti: skarpa linjer. Överstora huvuden eller förvridna ansikten = varning."
+      - "Fråga var jackan köptes och be om kvitto från en auktoriserad butik."
+
+  Parajumpers:
+    official:
+      name: Certilogo
+      url: https://www.certilogo.com
+      how: ange den 12-siffriga koden från äkthetslappen (plagg från hösten 2017)
+    tips:
+      - "Be om foto på äkthetslappen inuti med 12-siffrig Certilogo-kod och QR, och kolla koden (plagg från hösten 2017)."
+      - "Be om närbild på knapparna: äkta Parajumpers har gummi runt knapparna."
+      - "Be om foto på alla lappar inuti – enligt Parajumpers saknar kopior den officiella streckkoden."
+      - "Pälskrage? Fläckig päls av annan typ är vanligt på kopior."
+
+  Stone Island:
+    official:
+      name: Stone Island (Certilogo)
+      url: https://www.stoneisland.com/en-se/authenticity
+      how: skanna QR-koden eller ange den 12-siffriga koden från säkerhetslappen (plagg från SS14)
+    tips:
+      - "Be om skarp bild på Certilogo-lappen (QR + 12-siffrig kod) och kolla koden själv. Finns på plagg från SS14."
+      - "Be om bild på kompassmärkets baksida: sömmen runt knapphålen ska vara böjd. Helt rak söm = varning."
+      - "Äkta kompassmärken har ett enkelt droppstygn nedtill (utom märken från 1982–84)."
+      - "Lita inte på märket ensamt – äkta märken sätts på kopior. Kräv bilder på lapparna inuti."
+      - "Be om tvättlappens art-nummer och sök på det – träffarna ska visa samma modell."
+
+  C.P. Company:
+    official:
+      name: C.P. Company (Certilogo)
+      url: https://www.cpcompany.com/en-se/certilogo.html
+      how: skanna QR-koden eller ange den 12-siffriga koden från Certilogo-lappen (plagg från SS19)
+    tips:
+      - "Be om skarp bild på Certilogo-lappen (QR + 12-siffrig kod) och kolla koden. Finns på plagg från SS19."
+      - "Säljs plagget som SS19 eller senare men saknar Certilogo-lapp? Fråga varför."
+      - "Be om närbilder på linserna (goggle) och klockfönstret – dålig kvalitet där är det vanligaste tecknet på kopia."
+      - "Be om tvättlappens art-nummer och sök på det – träffarna ska visa samma modell och färg."
+
+  Supreme:
+    tips:
+      - "Box logo: bokstäverna ska ligga på en rak linje utan att nudda varandra. På hoodies ska loggan vara broderad, inte tryckt."
+      - "Be om rak närbild på nacklappen och jämför bokstäverna med verifierade bilder av exakt samma plagg och säsong."
+      - "USA-tillverkad t-shirt? Nacklappen ska ha punkter: 'MADE IN U.S.A.'."
+
+  Fear of God Essentials:
+    aliases: [Essentials]
+    tips:
+      - "Be om bild på bröstloggan snett från sidan: äkta tryck är matt och upphöjt. Blankt, platt eller flagnande = varning."
+      - "Kolla ESSENTIALS-texten: jämnt bokstavsavstånd. Kopior har ofta tjockare bokstäver och bredare mellanrum."
+      - "Nyare plagg har gummilogga baktill: fel typsnitt eller styv plast som inte böjer sig = varning."
+      - "Be om bild på tvättlappen: skarp text, inte suddig."
+
+  Arc'teryx:
+    official:
+      name: Arc'teryx om kopior
+      url: https://arcteryx.com/help/counterfeit
+    tips:
+      - "Be om närbild på fågelloggan: tätt och prydligt broderad, och namnet stavas Arc'teryx med apostrof."
+      - "Be om bild på blixtlåsen: bara YKK eller Vislon, dragare i plaggets färg, inga gummerade dragare."
+      - "Skaljacka: be om bild på de tejpade sömmarna inuti – smal, mjuk tejp, rent pålagd."
+      - "Be om bild på kardborreflikarna vid ärmsluten: avsmalnande och mjuka, utan gummi eller extra dekor."
+      - "En QR-kod på tvättlappen bevisar inget – kopior har också QR-koder."
+
+  The North Face:
+    aliases: [North Face]
+    tips:
+      - "Be om närbild på hologramlappen inuti: avklippta hörn och skarp logga. Saknas den – var misstänksam."
+      - "Be om närbild på bröstloggan: tätt broderi, tjocka bokstäver, raka bågar. Tunt eller luddigt = varning."
+      - "Be om bild på den lilla vita produktkodslappen: skarp svart text på rent vitt."
+      - "'Made in' avgör inget – äkta TNF tillverkas bl.a. i Vietnam, Bangladesh och Kina."
+
+  Woolrich:
+    tips:
+      - "Be om bild på nacketiketten: WOOLRICH med ®. Står det JOHN RICH & BROS ska det vara '&', aldrig 'and'."
+      - "Be om bild på blixtlås och knappar: tydligt präglade, knapparna oftast med märkesnamnet."
+
+  Barbour:
+    tips:
+      - "Be om närbild på knapparna: 'Barbour' präglat runt kanten, jämn font och rätt stavat."
+      - "Be om bild på dragkedjans dragare: även de ska vara präglade Barbour. Omärkta dragare = stor varning."
+      - "Be om bild på skötsellappen i innerfickan och jämför detaljerna med samma modell på barbour.com."
+
+  Prada:
+    tips:
+      - "Be om foto på halslapp och hela tvättlappen: skarp, jämnt spacad text. Tjock eller ojämn PRADA-text = varning."
+      - "Närbild på PRADA-loggan: R:ets högra ben ska ha ett litet böjt hack och peka lätt utåt. Rakt R-ben = varning."
+      - "Triangelmärket ska sitta rakt och stadigt, med skarpa bokstäver och jämn emalj utan bubblor."
+      - "Sök på artikelkoden på tvättlappen – den ska ge samma plagg. Kopior kan dock kopiera äkta koder."
+
+  Burberry:
+    aliases: [Burberrys]
+    tips:
+      - "Be om bild på rutmönstret vid sömmar och fickor: rutorna ska mötas exakt."
+      - "'Burberrys' (med s) är normalt på vintage från före 1999. En lapp som blandar två linjer = varning."
+      - "Rock/trench: knapparna ska vara tunga med skarp, jämn Burberry-prägling."
+      - "'Made in China/Poland' betyder inte kopia. Sök på artikelkoden – den ska ge samma plagg."
+
+  Ralph Lauren:
+    tips:
+      - "Be om foto på halslappen: pikéer och skjortor har en liten separat storlekslapp till höger om märkeslappen."
+      - "Be om bild på alla tvättlappar: äkta har flera med material och skötselråd. Bara '100% Cotton' = varning."
+      - "Närbild på ponnyn: tätt, skarpt broderi och klubban avlång (inte rund)."
+      - "QR-kod på lappen (nyare plagg)? Den ska leda till Ralph Laurens egen sajt."
+
+  Carhartt:
+    tips:
+      - "Be om foto på artikelnumret på innerlappen och sök på det – modell och färg ska stämma (WIP-koder börjar ofta med I0)."
+      - "Närbild på den fyrkantiga C-loggan: tätt vävd, skarpa kanter och rakt placerad."
+      - "Carhartt (USA) och Carhartt WIP har olika etiketter – detaljer från båda blandat = varning."

@@ -81,8 +81,9 @@ jobs:
         timeout-minutes: 13 # hänger något avbryts bara det här steget, och kedjan går vidare
         # --tyst: loggarna i ett publikt repo syns för alla, så inga fynd eller chatt-id:n skrivs ut.
         # Lugnt tempo (Vinted spärrar efter ett femtontal snabba anrop) och inga nya sökningar
-        # efter sju minuter; resten tas först i nästa körning.
-        run: python vinted_bot.py --once --tyst --paus 4 6 --max-tid 420
+        # efter sju minuter; resten tas först i nästa körning. --lyssna: svarar på /legit i
+        # Telegram under nio minuter, även medan boten söker.
+        run: python vinted_bot.py --once --tyst --paus 4 6 --max-tid 420 --lyssna 570
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
