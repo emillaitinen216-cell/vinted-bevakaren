@@ -1595,7 +1595,9 @@ class LegitListener:
                 log.warning("Legitcheck: Telegram svarade inte (%s) – försöker igen", e.description or e.code)
             time.sleep(30 if e.code == 409 else min(60, 5 * 2 ** (self.errors - 1)))
             return
-        self.errors = 0
+        if self.errors:
+            log.info("Legitcheck: kontakt med Telegram igen")
+            self.errors = 0
         if not updates:
             return
         self.offset = max(int(u.get("update_id", 0)) for u in updates) + 1
