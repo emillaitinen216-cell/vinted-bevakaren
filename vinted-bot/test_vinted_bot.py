@@ -1518,8 +1518,55 @@ class GroupFeatureTests(unittest.TestCase):
             tg.send(self.deal_msg(1))
             tg.send(self.deal_msg(2, topic="Jeans"))
         self.assertEqual(len(api.made("sendPhoto")), 2)
-        self.assertEqual(len(api.made("createForumTopic")), 1)
+        self.assertEqual(len(api.made("createForumTopic")), 2)  # ett försök per ämne och varv
         self.assertEqual(sum("Hantera ämnen" in line for line in logs.output), 1)
+
+    def test_deleted_topic_and_rejected_photo_create_only_one_new_topic(self):
+        self.store.set_setting(f"topic:{self.GROUP}:Dunjackor", "77")
+        api = FakeBotApi(lost_thread=True)
+        real_call = api.__call__
+
+        def photo_rejected(url, payload, timeout=20):
+            if url.endswith("/sendPhoto") and payload.get("message_thread_id") == 500:
+                api.calls.append(("sendPhoto", payload))
+                raise vb.NotifyError(400, json.dumps({"description": "Bad Request: wrong file identifier"}))
+            return real_call(url, payload, timeout)
+
+        self.notifier(photo_rejected).send(self.deal_msg())
+        self.assertEqual(len(api.made("createForumTopic")), 1)
+        self.assertEqual(api.made("sendMessage")[0]["message_thread_id"], 500)
+
+    def test_temporary_telegram_trouble_does_not_turn_topics_off(self):
+        api = FakeBotApi()
+        real_call = api.__call__
+        failures = {"getChat": 1, "createForumTopic": 1}
+
+        def flaky(url, payload, timeout=20):
+            method = url.rsplit("/", 1)[1]
+            if failures.get(method):
+                failures[method] -= 1
+                api.calls.append((method, payload))
+                raise OSError("timed out")
+            return real_call(url, payload, timeout)
+
+        tg = self.notifier(flaky)
+        for item_id in (1, 2, 3):
+            tg.send(self.deal_msg(item_id))
+        self.assertEqual([p.get("message_thread_id") for p in api.made("sendPhoto")], [None, None, 500])
+
+    def test_missing_right_for_one_topic_keeps_the_others(self):
+        self.store.set_setting(f"topic:{self.GROUP}:Dunjackor", "77")
+        api = FakeBotApi(topic_error="Bad Request: not enough rights to create a topic")
+        tg = self.notifier(api)
+        with self.assertLogs("vinted-bot", "WARNING"):
+            tg.send(self.deal_msg(1, topic="Jeans"))
+        tg.send(self.deal_msg(2))
+        tg.send(self.deal_msg(3, topic="Jeans"))
+        self.assertEqual([p.get("message_thread_id") for p in api.made("sendPhoto")], [None, 77, None])
+        self.assertEqual(len(api.made("createForumTopic")), 1)  # försöker inte igen samma varv
+        tg.new_run()                                                # men nästa varv
+        tg.send(self.deal_msg(4, topic="Jeans"))
+        self.assertEqual(len(api.made("createForumTopic")), 2)
 
     def test_deleted_topic_is_created_again(self):
         self.store.set_setting(f"topic:{self.GROUP}:Dunjackor", "77")
@@ -1658,6 +1705,44 @@ class GroupFeatureTests(unittest.TestCase):
         with self.assertRaises(vb.Blocked):
             self.sold_bot(FakeListingClient(error=vb.Blocked("HTTP 429"))).check_sold()
 
+    def test_failed_edit_is_tried_again_next_run(self):
+        self.api = FakeBotApi()
+        real_call = self.api.__call__
+        failures = [vb.NotifyError(429, json.dumps({"description": "Too Many Requests: retry after 30"}))]
+
+        def busy(url, payload, timeout=20):
+            if url.endswith("/editMessageCaption") and failures:
+                self.api.calls.append(("editMessageCaption", payload))
+                raise failures.pop()
+            return real_call(url, payload, timeout)
+
+        self.sent_ago(2 * 3600)
+        bot = vb.Bot(self.cfg, [], FakeListingClient(sold_page()), self.store, [self.notifier(busy)])
+        with self.assertLogs("vinted-bot", "WARNING"):
+            self.assertEqual(bot.check_sold(), 0)
+        self.assertEqual(len(self.store.due_sold_checks(10)), 1)   # inte klar – nytt försök
+        self.assertEqual(bot.check_sold(), 1)
+        self.assertEqual(len(self.api.made("editMessageCaption")), 2)
+        self.assertEqual(self.store.due_sold_checks(10), [])
+
+    def test_strange_listing_page_does_not_block_the_other_checks(self):
+        self.api = FakeBotApi()
+        self.sent_ago(3 * 3600, item_id=111, message_id=1)
+        self.sent_ago(2 * 3600, item_id=222, message_id=2)
+        client = FakeListingClient(sold_page(222))
+        bot = self.sold_bot(client)
+        real_parse = vb.parse_listing
+
+        def parse(body, base, item_id):
+            if item_id == 111:
+                raise KeyError(0)
+            return real_parse(body, base, item_id)
+
+        with mock.patch.object(vb, "parse_listing", side_effect=parse), self.assertLogs("vinted-bot", "WARNING"):
+            self.assertEqual(bot.check_sold(), 1)
+        self.assertEqual(client.calls, [111, 222])
+        self.assertEqual(self.api.made("editMessageCaption")[0]["message_id"], 2)
+
     def test_deals_are_recorded_for_sold_check(self):
         api = FakeBotApi()
         self.notifier(api).send(self.deal_msg())
@@ -1698,6 +1783,15 @@ class GroupFeatureTests(unittest.TestCase):
         self.assertIn("+950 kr", msg.lines[0])
         self.assertTrue(bot.daily_summary(evening + vb.timedelta(days=1)) is False)  # inga nya fynd
 
+    def test_daily_summary_is_sent_even_when_vinted_blocks(self):
+        isolate_notify_env(self)
+        summaries = []
+        with mock.patch.object(vb.Bot, "run_cycle", side_effect=vb.Blocked("HTTP 429")), \
+                mock.patch.object(vb.Bot, "try_daily_summary", lambda bot: summaries.append(1)), \
+                self.assertLogs("vinted-bot", "WARNING"):
+            vb.main(["--once", "--db", str(self.db)])
+        self.assertEqual(summaries, [1])
+
     def test_daily_summary_can_be_turned_off(self):
         notifier = FakeNotifier()
         self.log_deal(1, 500)
@@ -1707,12 +1801,21 @@ class GroupFeatureTests(unittest.TestCase):
 
     def test_shipped_config_skips_womens_and_kids_items(self):
         cfg, searches = vb.load_config(Path(vb.HERE / "config.yaml"))
-        search = next(s for s in searches if s.name == "Moncler")
-        hits = lambda title: [k for k, rx in search.exclude if rx.search(vb.fold(title))]
-        for title in ("Moncler dunjacka dam", "Moncler Kids 14 år", "Moncler women jacket", "Moncler damjacka"):
-            self.assertTrue(hits(title), title)
-        for title in ("Moncler Maya herr", "Moncler jacka Amsterdam", "Moncler damaged zip"):
-            self.assertEqual(hits(title), [], title)
+        by_name = {s.name: s for s in searches}
+
+        def verdict(search, title, brand, price):
+            deal, why = vb.evaluate(item(title=title, brand=brand, price=price, total=price + 20), by_name[search], cfg)
+            return "fynd" if deal else why
+
+        for title in ("Moncler dunjacka dam", "Moncler Kids 14 år", "Moncler women jacket", "Moncler damjacka",
+                      "Moncler dunjacka dam, inte herr", "Moncler jacka för barn"):
+            self.assertNotEqual(verdict("Moncler", title, "Moncler", 1000), "fynd", title)
+        for title in ("Moncler Maya herr", "Moncler jacka Amsterdam", "Moncler damaged zip", "Moncler herr/dam",
+                      "Moncler unisex dam", "Moncler veste homme femme", "Moncler men's women's"):
+            self.assertEqual(verdict("Moncler", title, "Moncler", 1000), "fynd", title)
+        # "barn jacket" och "kid mohair" är herrplagg, inte barnkläder.
+        self.assertEqual(verdict("Carhartt jackor", "Carhartt Barn Coat brun", "Carhartt", 100), "fynd")
+        self.assertEqual(verdict("Acne Studios tröjor", "Acne Studios kid mohair cardigan", "Acne Studios", 200), "fynd")
 
 
 if __name__ == "__main__":

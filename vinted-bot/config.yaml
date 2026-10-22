@@ -50,8 +50,27 @@ exclude_keywords:
   - söker        # "Söker Moncler …"-annonser
   - wtb
   - defekt       # trasiga plagg (men inte "defekter", som i "inga defekter")
-  # Dam- och barnplagg som hamnat bland herrkläderna (svenska, engelska, polska, tyska, franska)
+  # Barnplagg som hamnat bland herrkläderna (svenska, engelska, polska, tyska, franska).
+  # Inte bara "barn" och "kid": "barn jacket" och "kid mohair" är vanliga herrplagg.
+  - barnjacka
+  - barnstorlek
+  - barn storlek
+  - för barn
+  - till barn
+  - kids
+  - junior
+  - girls
+  - boys
+  - dziecięca
+  - dziecięcy
+  - kinder
+  - enfant
+
+# Damplagg som hamnat bland herrkläderna hoppas över – utom när titeln också
+# säger att plagget passar herrar ("herr/dam", "unisex", "homme femme").
+womens_keywords:
   - dam
+  - damjacka
   - dames
   - damska
   - damski
@@ -62,18 +81,18 @@ exclude_keywords:
   - womens
   - woman
   - ladies
-  - barn
-  - kids
-  - kid
-  - junior
-  - girls
-  - boys
-  - dziecięca
-  - dziecięcy
-  - kinder
-  - enfant
-  - damjacka
-  - barnjacka
+unisex_keywords:
+  - unisex
+  - herr
+  - herrar
+  - herren
+  - homme
+  - mens
+  - for men
+  - męska
+  - męski
+  - męskie
+  - heren
 
 # Ord i titeln som höjer (eller med minus sänker) säljvärdet, i kronor.
 premium_keywords:

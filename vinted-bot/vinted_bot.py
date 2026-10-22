@@ -80,6 +80,8 @@ DEFAULTS: dict = {
         "Tillfredsställande": 0.6,
     },
     "exclude_keywords": [],
+    "womens_keywords": [],              # damplagg – hoppas över om titeln inte också säger unisex/herr
+    "unisex_keywords": [],
     "premium_keywords": {},
     "notify": {},
     # Ämnen i Telegram-gruppen: ämnets namn -> sökningarnas taggar som hör dit (första träffen gäller).
@@ -198,6 +200,8 @@ class Search:
     exclude: list[tuple[str, re.Pattern]]
     premium: list[tuple[str, re.Pattern, float]]
     tags: list[str] = field(default_factory=list)
+    womens: list[tuple[str, re.Pattern]] = field(default_factory=list)
+    unisex: list[re.Pattern] = field(default_factory=list)
 
     def rule_for(self, brand: str) -> BrandRule | None:
         brand_words = words(brand)
@@ -286,6 +290,7 @@ def build_search(raw: dict, cfg: dict) -> Search:
 
     premium = {**(cfg.get("premium_keywords") or {}), **(raw.get("premium_keywords") or {})}
     exclude = list(cfg.get("exclude_keywords") or []) + list(raw.get("exclude_keywords") or [])
+    womens = list(cfg.get("womens_keywords") or []) + list(raw.get("womens_keywords") or [])
     return Search(
         name=name,
         query=str(raw.get("query") or "").strip(),
@@ -298,6 +303,8 @@ def build_search(raw: dict, cfg: dict) -> Search:
         exclude=[(str(k), keyword_re(str(k))) for k in exclude],
         premium=[(str(k), keyword_re(str(k)), _num(v, f"premium_keywords/{k}")) for k, v in premium.items()],
         tags=[str(tag) for tag in (raw.get("tags") or [])],
+        womens=[(str(k), keyword_re(str(k))) for k in womens],
+        unisex=[keyword_re(str(k)) for k in cfg.get("unisex_keywords") or []],
     )
 
 
@@ -558,9 +565,15 @@ def evaluate(item: Item, search: Search, cfg: dict) -> tuple[Deal | None, str]:
     if not rule.min_price <= item.price <= rule.max_price:
         return None, f"pris {item.price:.0f} utanför {rule.min_price:.0f}–{rule.max_price:.0f}"
     text = fold(item.title)
+    def mentions(pattern: re.Pattern) -> bool:
+        return any(not negated(text, m.start()) for m in pattern.finditer(text))
+
     for keyword, pattern in search.exclude:
-        if any(not negated(text, m.start()) for m in pattern.finditer(text)):
+        if mentions(pattern):
             return None, f"innehåller '{keyword}'"
+    for keyword, pattern in search.womens:  # "herr/dam" och "unisex" passar herrar också
+        if mentions(pattern) and not any(mentions(u) for u in search.unisex):
+            return None, f"damplagg ('{keyword}')"
     if search.sizes and item.size and not search.sizes & set(words(item.size)):
         return None, f"storlek {item.size}"
 
@@ -692,6 +705,11 @@ def http_post_json(url: str, payload: dict, timeout: float = 20):
     return json.loads(body) if body else None
 
 
+def temporary_error(e: Exception) -> bool:
+    """Nätverksfel, för många anrop eller fel hos Telegram – värt att försöka igen senare."""
+    return isinstance(e, OSError) or (isinstance(e, NotifyError) and (e.status == 429 or e.status >= 500))
+
+
 class TelegramNotifier:
     name = "Telegram"
 
@@ -700,7 +718,8 @@ class TelegramNotifier:
         self.api = f"https://api.telegram.org/bot{token}"
         self.legit_button = legit_button  # bara när LegitListener lyssnar, annars gör knapparna inget
         self.store = store                # ämnenas id:n och skickade fynd (för "❌ SÅLD")
-        self._forum: bool | None = None   # har gruppen Ämnen påslaget? Kollas en gång per körning
+        self._forum: bool | None = None   # har gruppen Ämnen påslaget? Kollas en gång per varv
+        self._no_topic: set[str] = set()  # ämnen som inte gick att skapa det här varvet
         self._topic_warned = False
         self.chat_id = chat_id
         self.on_migrate = on_migrate  # anropas med nytt chat-id när en grupp blivit supergrupp
@@ -724,16 +743,22 @@ class TelegramNotifier:
         result = (response or {}).get("result") if isinstance(response, dict) else None
         return result if isinstance(result, dict) else {}
 
+    def new_run(self) -> None:
+        """Nytt varv: kolla igen om gruppen har Ämnen (ägaren kan ha slagit på dem eller gett rätten)."""
+        self._forum, self._no_topic = None, set()
+
     def _thread(self, chat_id: str, topic: str | None, fresh: bool = False) -> int | None:
         """Ämnet (tråden) i gruppen för meddelandet – skapas första gången. None om gruppen saknar Ämnen."""
-        if not topic or not self.store or not str(chat_id).startswith("-"):
+        if not topic or not self.store or not str(chat_id).startswith("-") or topic in self._no_topic:
             return None
         if self._forum is None:
             try:
                 info = http_post_json(f"{self.api}/getChat", {"chat_id": chat_id}) or {}
                 self._forum = bool((info.get("result") or {}).get("is_forum"))
-            except (NotifyError, OSError):
-                self._forum = False
+            except (NotifyError, OSError, ValueError) as e:
+                if not temporary_error(e):
+                    self._forum = False
+                return None  # tillfälligt fel: kolla igen vid nästa meddelande
         if not self._forum:
             return None
         key = f"topic:{chat_id}:{topic}"
@@ -743,12 +768,14 @@ class TelegramNotifier:
             created = http_post_json(f"{self.api}/createForumTopic", {"chat_id": chat_id, "name": topic[:128]}) or {}
             thread = int(created["result"]["message_thread_id"])
         except (NotifyError, OSError, KeyError, TypeError, ValueError) as e:
+            if temporary_error(e):
+                return None  # försök igen med nästa fynd
+            self._no_topic.add(topic)  # ämnen som redan finns fungerar fortfarande
             if not self._topic_warned:
                 self._topic_warned = True
                 why = e.description if isinstance(e, NotifyError) else type(e).__name__
                 log.warning("Telegram: kunde inte skapa ämnet '%s' (%s) – ge boten rätten 'Hantera ämnen'. "
                             "Fynden skickas utan ämnen så länge.", topic, why)
-            self._forum = False
             return None
         self.store.set_setting(key, str(thread))
         return thread
@@ -777,11 +804,11 @@ class TelegramNotifier:
                 if not topic_key or "thread not found" not in e.description.lower():
                     raise
                 self.store.set_setting(topic_key, "")  # ämnet har tagits bort – skapa det igen
-                new_thread = self._thread(target, msg.topic, fresh=True)
-                retry = {k: v for k, v in payload.items() if k != "message_thread_id"}
-                if new_thread:
-                    retry["message_thread_id"] = new_thread
-                return self._post(method, {**retry, **body}, chat_id)
+                # Ändra payload på plats, så att även reservförsöket som text hamnar i det nya ämnet.
+                payload.pop("message_thread_id", None)
+                if new_thread := self._thread(target, msg.topic, fresh=True):
+                    payload["message_thread_id"] = new_thread
+                return self._post(method, {**payload, **body}, chat_id)
 
         sent, kind = None, "text"
         if msg.photo and len(text) <= 1024:  # bildtexter får vara max 1024 tecken
@@ -2029,6 +2056,9 @@ class Bot:
         varv börjar där det här slutade – så att varje körning i molnet ryms inom en debiterad minut."""
         started = time.monotonic()  # tidsgränsen räknar även in fynd som skickas om
         self._pauses_left = self.block_pauses
+        for notifier in self.notifiers:
+            if isinstance(notifier, TelegramNotifier):
+                notifier.new_run()
         try:
             self.flush_pending()
         except Exception:
@@ -2096,16 +2126,23 @@ class Bot:
             except FetchError as e:
                 log.debug("Kunde inte kolla om ett fynd är sålt: %s", e)
                 continue  # nytt försök nästa varv
-            listing = parse_listing(body, self.client.base, item_id) if body else None
-            status = "BORTTAGEN" if body is None else ("SÅLD" if listing and listing.sold else None)
-            if status:
-                for chat, message_id, _, kind, html, url in messages:
+            done = True
+            try:
+                listing = parse_listing(body, self.client.base, item_id) if body else None
+                status = "BORTTAGEN" if body is None else ("SÅLD" if listing and listing.sold else None)
+                for chat, message_id, _, kind, html, url in (messages if status else []):
                     try:
                         tg[0].mark_sold(chat, message_id, kind, html, url, status)
                     except Exception as e:  # bara Telegrams förklaring – hela svaret kan innehålla chatt-id
+                        done = done and not temporary_error(e)  # tillfälligt fel: försök igen nästa varv
                         log.warning("Kunde inte markera ett fynd som sålt: %s",
                                     e.description if isinstance(e, NotifyError) else type(e).__name__)
-                marked += 1
+            except Exception as e:  # oväntad annonssida: räkna kollen, så att den inte stoppar de andra
+                log.warning("Kunde inte kolla om ett fynd är sålt (%s)", type(e).__name__)
+                status = None
+            if not done:
+                continue
+            marked += bool(status)
             self.store.sold_checked(item_id, status)
         if marked:
             log.info("Markerade %d fynd som sålda.", marked)
@@ -2136,6 +2173,12 @@ class Bot:
         log.info("Skickade dagens bästa fynd.")
         return True
 
+    def try_daily_summary(self) -> None:
+        try:
+            self.daily_summary()
+        except Exception:
+            log.exception("Kunde inte skicka dagens bästa fynd")
+
     def run_forever(self) -> None:
         backoff = 0
         while True:
@@ -2145,12 +2188,10 @@ class Bot:
             except Blocked as e:
                 backoff = min(max(backoff * 2, 60), 900)
                 log.warning("Vinted nekade anropet (%s) – pausar %d s och försöker igen", e, backoff)
+                self.try_daily_summary()  # behöver inte Vinted
                 time.sleep(backoff)
                 continue
-            try:
-                self.daily_summary()
-            except Exception:
-                log.exception("Kunde inte skicka dagens bästa fynd")
+            self.try_daily_summary()
             wait = float(self.cfg["interval_seconds"]) * random.uniform(0.8, 1.2)
             log.info("Varv klart: %d fynd. Nästa sökning om %d s.", found, wait)
             time.sleep(wait)
@@ -2355,11 +2396,10 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Legitcheck: svarar på /legit i Telegram%s.", f" i {args.listen:g} s" if until else "")
     try:
         if args.once:
-            log.info("Klart: %d fynd.", bot.run_cycle())
             try:
-                bot.daily_summary()
-            except Exception:
-                log.exception("Kunde inte skicka dagens bästa fynd")
+                log.info("Klart: %d fynd.", bot.run_cycle())
+            finally:
+                bot.try_daily_summary()  # även när Vinted spärrar – sammanfattningen behöver inte Vinted
         else:
             bot.run_forever()
     except Blocked as e:
