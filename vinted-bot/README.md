@@ -242,6 +242,33 @@ står det i svaret. Bara fynd-chatten och din privata chatt får svar.
 - **En enstaka annons utan Telegram:**
   `python vinted_bot.py --legit https://www.vinted.se/items/…`
 
+#### Ämnen, "Jag tar den", sålda fynd och dagens bästa
+
+**Ämnen (en flik per kategori).** Fynden kan sorteras i ämnen som
+*Dunjackor*, *Jackor*, *Jeans*, *Tröjor & skjortor* och *Byxor & shorts*:
+
+1. Tryck på gruppens namn, sedan pennan (*Redigera*), och slå på **Ämnen**.
+2. Gör boten till administratör med rätten **Hantera ämnen** (*Administratörer*
+   → *Lägg till administratör* → din bot).
+
+Boten skapar ämnena själv vid nästa körning. Vilka sökningar som hamnar i
+vilket ämne styrs av `topics` i `config.yaml` (sökningarnas taggar). Utan
+Ämnen, eller utan rätten, kommer fynden i gruppen som vanligt. `/legit` som
+skrivs i ett ämne besvaras i samma ämne.
+
+**🙋 Jag tar den.** Under varje fynd i gruppen finns en knapp. Den som trycker
+först får sitt namn på knappen (*"🙋 Emil tar den"*), så att inte två köper
+samma plagg. Trycker samma person igen släpps fyndet. Trycker någon annan får
+den veta vem som redan tagit det.
+
+**❌ SÅLD.** Boten kollar varje fynd igen efter ungefär 1, 6 och 24 timmar. Är
+plagget sålt ändras inlägget till *❌ SÅLD* (eller *❌ BORTTAGEN* om annonsen
+är borta), så att ni slipper klicka på fynd som redan är borta.
+
+**⭐ Dagens bästa.** Efter kl. 20 (svensk tid) skickar boten en gång om dagen
+dygnets fem fynd med störst vinst som inte hunnit säljas, i ett eget ämne.
+Tiden ändras med `daily_summary_hour` i `config.yaml` (`false` stänger av).
+
 ### ntfy (enklast, inget konto)
 
 Installera appen [ntfy](https://ntfy.sh) och prenumerera på ett ämne med ett
@@ -293,7 +320,9 @@ Alla sökningar finns i `config.yaml`. Ett exempel:
 - **sizes:** `[W32, W33, M]` begränsar sökningen till vissa storlekar.
 - **premium_keywords** höjer säljvärdet när ett ord finns i titeln. Negativa
   värden sänker det.
-- **exclude_keywords** hoppar över annonser vars titel innehåller ordet.
+- **exclude_keywords** hoppar över annonser vars titel innehåller ordet. Den
+  globala listan tar redan bort kopior och dam- och barnplagg ("dam", "kids",
+  "junior" m.fl.).
 - **tags:** `[Jeans]` ger hashtaggen `#Jeans` i notisen. Märket blir alltid en hashtagg.
 - **enabled: false** pausar en sökning.
 
@@ -306,6 +335,8 @@ Globala inställningar högst upp i filen:
 | `sell_fee_percent` | 0 | Avgift när du säljer. Vinted tar ingen, Tradera ungefär 10 % |
 | `min_roi_percent` | 30 | Minsta avkastning på insatsen |
 | `condition_multipliers` | | Skickfaktorer, t.ex. Bra = 0,85 och Ny med prislapp = 1,25 |
+| `topics` | 5 ämnen | Ämne i Telegram-gruppen per tagg, se [Ämnen](#ämnen-jag-tar-den-sålda-fynd-och-dagens-bästa) |
+| `daily_summary_hour` | 20 | När dagens fem bästa fynd skickas (svensk tid). `false` = av |
 
 ### Kalibrera säljvärdena
 

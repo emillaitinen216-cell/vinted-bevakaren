@@ -5,6 +5,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
 from unittest import mock
 from pathlib import Path
 
@@ -1423,6 +1424,295 @@ class LegitListenerTests(unittest.TestCase):
         for bad in ("0", "-1", "nan"):
             with self.assertLogs("vinted-bot", "ERROR"):
                 self.assertEqual(vb.main(["--lyssna", bad, "--dry-run"]), 2, bad)
+
+
+class FakeBotApi:
+    """Låtsas-Telegram för notiserna: svarar som Bot API och sparar alla anrop."""
+
+    def __init__(self, forum=True, topic_error=None, lost_thread=False):
+        self.calls, self.forum, self.topic_error, self.lost_thread = [], forum, topic_error, lost_thread
+        self.message_ids, self.thread_ids = iter(range(100, 200)), iter(range(500, 600))
+
+    def __call__(self, url, payload, timeout=20):
+        method = url.rsplit("/", 1)[1]
+        self.calls.append((method, payload))
+        if method == "getChat":
+            return {"ok": True, "result": {"id": int(payload["chat_id"]), "is_forum": self.forum}}
+        if method == "createForumTopic":
+            if self.topic_error:
+                raise vb.NotifyError(400, json.dumps({"description": self.topic_error}))
+            return {"ok": True, "result": {"message_thread_id": next(self.thread_ids), "name": payload["name"]}}
+        if method in ("sendMessage", "sendPhoto"):
+            if self.lost_thread and payload.get("message_thread_id"):
+                self.lost_thread = False
+                raise vb.NotifyError(400, json.dumps({"description": "Bad Request: message thread not found"}))
+            return {"ok": True, "result": {"message_id": next(self.message_ids), "chat": {"id": int(payload["chat_id"])}}}
+        return {"ok": True, "result": True}
+
+    def made(self, method):
+        return [payload for m, payload in self.calls if m == method]
+
+
+def sold_page(item_id=42):
+    return listing_page(item_id) + "\n99:" + plugin("buyer_item_status", {"item_id": str(item_id), "title": "Såld"})
+
+
+class GroupFeatureTests(unittest.TestCase):
+    """Ämnen, "🙋 Jag tar den", "❌ SÅLD" och dagens bästa fynd."""
+    GROUP = "-1001"
+
+    def setUp(self):
+        self.cfg = make_cfg()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "bot.db"
+        self.store = vb.Store(self.db)
+        self.addCleanup(self.store.db.close)
+
+    def notifier(self, api, **kw):
+        patcher = mock.patch.object(vb, "http_post_json", side_effect=api)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return vb.TelegramNotifier(TOKEN, self.GROUP, legit_button=True, store=self.store, **kw)
+
+    def deal_msg(self, item_id=42, topic="Dunjackor"):
+        return vb.Message("🔥 Moncler", ["Pris: 900 kr"], f"{BASE}/items/{item_id}-jacka", f"{BASE}/p.jpg",
+                          item_id=item_id, topic=topic)
+
+    # --- ämnen ---
+
+    def test_topic_for_uses_search_tags(self):
+        cfg = make_cfg(topics={"Dunjackor": ["Dunjacka"], "Jeans": ["Jeans", "Bootcut"]})
+        self.assertEqual(vb.topic_for(["Herr", "dunjacka"], cfg), "Dunjackor")
+        self.assertEqual(vb.topic_for(["Bootcut"], cfg), "Jeans")
+        self.assertIsNone(vb.topic_for(["Skor"], cfg))
+
+    def test_shipped_config_puts_every_search_in_a_topic(self):
+        cfg, searches = vb.load_config(Path(vb.HERE / "config.yaml"))
+        self.assertEqual([s.name for s in searches if not vb.topic_for(s.tags, cfg)], [])
+
+    def test_deals_go_to_their_topic_which_is_created_once(self):
+        api = FakeBotApi()
+        tg = self.notifier(api)
+        tg.send(self.deal_msg(1))
+        tg.send(self.deal_msg(2))
+        tg.send(self.deal_msg(3, topic="Jeans"))
+        self.assertEqual([p["name"] for p in api.made("createForumTopic")], ["Dunjackor", "Jeans"])
+        self.assertEqual([p["message_thread_id"] for p in api.made("sendPhoto")], [500, 500, 501])
+        self.assertEqual(len(api.made("getChat")), 1)
+        # Nästa körning (ny notifierare) minns ämnena.
+        api2 = FakeBotApi()
+        self.notifier(api2).send(self.deal_msg(4))
+        self.assertEqual((api2.made("createForumTopic"), api2.made("sendPhoto")[0]["message_thread_id"]), ([], 500))
+
+    def test_group_without_topics_gets_plain_messages(self):
+        api = FakeBotApi(forum=False)
+        self.notifier(api).send(self.deal_msg())
+        self.assertNotIn("message_thread_id", api.made("sendPhoto")[0])
+        self.assertEqual(api.made("createForumTopic"), [])
+
+    def test_missing_topic_right_warns_once_and_still_sends(self):
+        api = FakeBotApi(topic_error="Bad Request: not enough rights to create a topic")
+        tg = self.notifier(api)
+        with self.assertLogs("vinted-bot", "WARNING") as logs:
+            tg.send(self.deal_msg(1))
+            tg.send(self.deal_msg(2, topic="Jeans"))
+        self.assertEqual(len(api.made("sendPhoto")), 2)
+        self.assertEqual(len(api.made("createForumTopic")), 1)
+        self.assertEqual(sum("Hantera ämnen" in line for line in logs.output), 1)
+
+    def test_deleted_topic_is_created_again(self):
+        self.store.set_setting(f"topic:{self.GROUP}:Dunjackor", "77")
+        api = FakeBotApi(lost_thread=True)
+        self.notifier(api).send(self.deal_msg())
+        self.assertEqual([p.get("message_thread_id") for p in api.made("sendPhoto")], [77, 500])
+        self.assertEqual(self.store.get_setting(f"topic:{self.GROUP}:Dunjackor"), "500")
+
+    # --- knapparna ---
+
+    def test_group_deal_has_claim_button_private_chat_not(self):
+        api = FakeBotApi()
+        self.notifier(api).send(self.deal_msg())
+        keyboard = api.made("sendPhoto")[0]["reply_markup"]["inline_keyboard"]
+        self.assertEqual([b.get("callback_data") for row in keyboard for b in row], [None, "legit:42", "claim:42"])
+        api2 = FakeBotApi()
+        patcher = mock.patch.object(vb, "http_post_json", side_effect=api2)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        vb.TelegramNotifier(TOKEN, "555", legit_button=True, store=self.store).send(self.deal_msg())
+        keyboard = api2.made("sendPhoto")[0]["reply_markup"]["inline_keyboard"]
+        self.assertNotIn("claim:42", [b.get("callback_data") for row in keyboard for b in row])
+
+    def claim_query(self, update_id, user_id, name, keyboard):
+        return {"update_id": update_id, "callback_query": {
+            "id": f"q{update_id}", "from": {"id": user_id, "first_name": name}, "data": "claim:42",
+            "message": {"message_id": 9, "chat": {"id": int(self.GROUP), "type": "supergroup"},
+                        "reply_markup": {"inline_keyboard": keyboard}}}}
+
+    def test_claim_button_first_click_wins_and_can_be_released(self):
+        telegram = LegitTelegram()
+        sent = []
+        patcher = mock.patch.object(vb, "http_post_json",
+                                    side_effect=lambda url, payload, timeout=20: sent.append((url, payload)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        listener = vb.LegitListener(TOKEN, self.db, self.cfg, [], LEGIT_TIPS, fixed_chat=self.GROUP,
+                                    api=telegram, client=FakeListingClient())
+        keyboard = [[{"text": "Öppna på Vinted", "url": f"{BASE}/items/42"},
+                     {"text": "🔍 Legitcheck", "callback_data": "legit:42"}],
+                    [{"text": "🙋 Jag tar den", "callback_data": "claim:42"}]]
+
+        def click(update_id, user_id, name):
+            telegram.updates = [[self.claim_query(update_id, user_id, name, keyboard)]]
+            listener.poll(self.store)
+            return telegram.calls[-1][2]["text"]
+
+        self.assertIn("Den är din", click(1, 7, "Emil"))
+        url, payload = sent[-1]
+        self.assertTrue(url.endswith("/editMessageReplyMarkup"))
+        self.assertEqual(payload["reply_markup"]["inline_keyboard"][1][0],
+                         {"text": "🙋 Emil tar den", "callback_data": "claim:42"})
+        self.assertEqual(payload["reply_markup"]["inline_keyboard"][0], keyboard[0])
+        self.assertEqual(click(2, 8, "Kalle"), "Emil har redan tagit den.")
+        self.assertEqual(len(sent), 1)                         # knappen ändras inte
+        self.assertEqual(click(3, 7, "Emil"), "Du släppte den.")
+        self.assertEqual(sent[-1][1]["reply_markup"]["inline_keyboard"][1][0]["text"], "🙋 Jag tar den")
+        self.assertIn("Den är din", click(4, 8, "Kalle"))
+
+    def test_claim_in_other_chat_is_ignored(self):
+        telegram = LegitTelegram()
+        with mock.patch.object(vb, "http_post_json") as post:
+            listener = vb.LegitListener(TOKEN, self.db, self.cfg, [], LEGIT_TIPS, fixed_chat=self.GROUP,
+                                        api=telegram, client=FakeListingClient())
+            query = self.claim_query(1, 7, "Emil", [])
+            query["callback_query"]["message"]["chat"]["id"] = -999
+            telegram.updates = [[query]]
+            listener.poll(self.store)
+        post.assert_not_called()
+
+    def test_legit_reply_lands_in_same_topic(self):
+        telegram = LegitTelegram()
+        sent = []
+        with mock.patch.object(vb, "http_post_json", side_effect=lambda url, payload, timeout=20: sent.append(payload)):
+            listener = vb.LegitListener(TOKEN, self.db, self.cfg, legit_searches(self.cfg), LEGIT_TIPS,
+                                        fixed_chat=self.GROUP, api=telegram, client=FakeListingClient(listing_page()))
+            msg = tg_msg(5, int(self.GROUP), "/legit 42424242", 7, 100, chat_type="supergroup")
+            msg["message"].update(message_thread_id=500, is_topic_message=True)
+            telegram.updates = [[msg]]
+            listener.poll(self.store)
+        self.assertEqual(sent[-1]["message_thread_id"], 500)
+
+    # --- sålda fynd ---
+
+    def sold_bot(self, client):
+        return vb.Bot(self.cfg, [], client, self.store, [self.notifier(self.api)])
+
+    def sent_ago(self, seconds, item_id=42, message_id=9):
+        self.store.record_sent(self.GROUP, message_id, item_id, "photo", "<b>🔥 Moncler</b>\nPris: 900 kr",
+                               f"{BASE}/items/{item_id}")
+        self.store.db.execute("UPDATE sent SET ts = ts - ? WHERE message_id = ?", (seconds, message_id))
+
+    def test_sold_listing_parsed(self):
+        self.assertTrue(vb.parse_listing(sold_page(), BASE, 42).sold)
+        self.assertFalse(vb.parse_listing(listing_page(), BASE, 42).sold)
+        lines = vb.legit_check(vb.parse_listing(sold_page(), BASE, 42), [], LEGIT_TIPS).lines
+        self.assertIn("❌ Annonsen är redan såld.", lines)
+
+    def test_sold_deal_is_marked_in_the_group(self):
+        self.api = FakeBotApi()
+        self.sent_ago(2 * 3600)
+        client = FakeListingClient(sold_page())
+        self.assertEqual(self.sold_bot(client).check_sold(), 1)
+        (edit,) = self.api.made("editMessageCaption")
+        self.assertEqual((edit["chat_id"], edit["message_id"]), (self.GROUP, 9))
+        self.assertTrue(edit["caption"].startswith("❌ <b>SÅLD</b>\n<b>🔥 Moncler</b>"))
+        self.assertEqual(edit["reply_markup"]["inline_keyboard"], [[{"text": "Öppna på Vinted", "url": f"{BASE}/items/42"}]])
+        self.assertEqual(self.store.due_sold_checks(10), [])   # kollas inte igen
+        self.assertEqual(self.store.top_deals(0), [])
+
+    def test_unsold_deal_is_checked_after_1_6_and_24_hours(self):
+        self.api = FakeBotApi()
+        self.sent_ago(30 * 60)
+        client = FakeListingClient(listing_page())
+        bot = self.sold_bot(client)
+        self.assertEqual(bot.check_sold(), 0)
+        self.assertEqual(client.calls, [])                    # för tidigt
+        for hours, expected_calls in ((1, 1), (2, 1), (6, 2), (24, 3), (48, 3)):
+            self.store.db.execute("UPDATE sent SET ts = ?", (int(vb.time.time()) - hours * 3600 - 1,))
+            bot.check_sold()
+            self.assertEqual(len(client.calls), expected_calls, hours)
+        self.assertEqual(self.api.made("editMessageCaption"), [])
+
+    def test_removed_listing_is_marked_removed(self):
+        self.api = FakeBotApi()
+        self.sent_ago(7 * 3600)
+        self.sold_bot(FakeListingClient(None)).check_sold()
+        self.assertTrue(self.api.made("editMessageCaption")[0]["caption"].startswith("❌ <b>BORTTAGEN</b>"))
+
+    def test_vinted_trouble_does_not_count_as_a_check(self):
+        self.api = FakeBotApi()
+        self.sent_ago(2 * 3600)
+        bot = self.sold_bot(FakeListingClient(error=vb.FetchError("HTTP 500")))
+        self.assertEqual(bot.check_sold(), 0)
+        self.assertEqual(len(self.store.due_sold_checks(10)), 1)
+        with self.assertRaises(vb.Blocked):
+            self.sold_bot(FakeListingClient(error=vb.Blocked("HTTP 429"))).check_sold()
+
+    def test_deals_are_recorded_for_sold_check(self):
+        api = FakeBotApi()
+        self.notifier(api).send(self.deal_msg())
+        (row,) = self.store.db.execute("SELECT chat_id, message_id, item_id, kind FROM sent").fetchall()
+        self.assertEqual(row, (self.GROUP, 100, 42, "photo"))
+
+    def test_prune_forgets_old_claims(self):
+        self.sent_ago(15 * 86400, message_id=1)
+        self.sent_ago(3600, message_id=2)
+        for message_id in (1, 2, 3):
+            self.store.set_setting(f"claim:{self.GROUP}:{message_id}", "{}")
+        self.store.set_setting(f"topic:{self.GROUP}:Jeans", "500")
+        self.store.prune()
+        keys = sorted(k for (k,) in self.store.db.execute("SELECT key FROM settings"))
+        self.assertEqual(keys, [f"claim:{self.GROUP}:2", f"topic:{self.GROUP}:Jeans"])
+
+    # --- dagens bästa fynd ---
+
+    def log_deal(self, item_id, profit, brand="Moncler"):
+        it = item(id=item_id, brand=brand, title=f"{brand} jacka", price=900, total=950, url=f"{BASE}/items/{item_id}")
+        self.store.log_deal(vb.Deal(it, "Dunjackor", resale=900 + profit, cost=950, profit=profit, roi=50))
+
+    def test_daily_summary_after_eight_once_a_day(self):
+        notifier = FakeNotifier()
+        bot = vb.Bot(self.cfg, [], FakeClient(), self.store, [notifier])
+        for item_id, profit in ((1, 300), (2, 900), (3, 500), (4, 100), (5, 700), (6, 200), (2, 950)):
+            self.log_deal(item_id, profit)
+        self.store.record_sent(self.GROUP, 1, 5, "photo", "x", "u")
+        self.store.sold_checked(5, "SÅLD")                    # sålda räknas inte
+        evening = datetime(2026, 10, 22, 20, 5, tzinfo=vb.STOCKHOLM)
+        self.assertFalse(bot.daily_summary(evening.replace(hour=19)))
+        self.assertTrue(bot.daily_summary(evening))
+        self.assertFalse(bot.daily_summary(evening.replace(hour=23)))
+        (msg,) = notifier.sent
+        self.assertEqual(msg.title, "⭐ Dagens 5 bästa fynd")
+        self.assertEqual(msg.topic, "⭐ Dagens bästa")
+        self.assertEqual([row[0]["url"] for row in msg.buttons], [f"{BASE}/items/{i}" for i in (2, 3, 1, 6, 4)])
+        self.assertIn("+950 kr", msg.lines[0])
+        self.assertTrue(bot.daily_summary(evening + vb.timedelta(days=1)) is False)  # inga nya fynd
+
+    def test_daily_summary_can_be_turned_off(self):
+        notifier = FakeNotifier()
+        self.log_deal(1, 500)
+        bot = vb.Bot(make_cfg(daily_summary_hour=None), [], FakeClient(), self.store, [notifier])
+        self.assertFalse(bot.daily_summary(datetime(2026, 10, 22, 21, tzinfo=vb.STOCKHOLM)))
+        self.assertEqual(notifier.sent, [])
+
+    def test_shipped_config_skips_womens_and_kids_items(self):
+        cfg, searches = vb.load_config(Path(vb.HERE / "config.yaml"))
+        search = next(s for s in searches if s.name == "Moncler")
+        hits = lambda title: [k for k, rx in search.exclude if rx.search(vb.fold(title))]
+        for title in ("Moncler dunjacka dam", "Moncler Kids 14 år", "Moncler women jacket", "Moncler damjacka"):
+            self.assertTrue(hits(title), title)
+        for title in ("Moncler Maya herr", "Moncler jacka Amsterdam", "Moncler damaged zip"):
+            self.assertEqual(hits(title), [], title)
 
 
 if __name__ == "__main__":

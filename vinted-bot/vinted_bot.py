@@ -34,10 +34,17 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 
 import yaml
+
+try:
+    from zoneinfo import ZoneInfo
+    STOCKHOLM = ZoneInfo("Europe/Stockholm")
+except Exception:  # saknas tidszonsdata: nära nog
+    STOCKHOLM = timezone(timedelta(hours=1))
 
 log = logging.getLogger("vinted-bot")
 HERE = Path(__file__).resolve().parent
@@ -75,6 +82,16 @@ DEFAULTS: dict = {
     "exclude_keywords": [],
     "premium_keywords": {},
     "notify": {},
+    # Ämnen i Telegram-gruppen: ämnets namn -> sökningarnas taggar som hör dit (första träffen gäller).
+    "topics": {
+        "Dunjackor": ["Dunjacka"],
+        "Jackor": ["Jacka", "Fältjacka"],
+        "Jeans": ["Jeans", "Bootcut"],
+        "Tröjor & skjortor": ["Tröja", "Skjorta", "Hoodie"],
+        "Byxor & shorts": ["Byxor", "Shorts", "Mjukisbyxor"],
+    },
+    "daily_summary_hour": 20,           # "Dagens 5 bästa fynd" efter den här timmen (svensk tid); false = av
+    "summary_topic": "⭐ Dagens bästa",
 }
 
 
@@ -582,6 +599,19 @@ class Message:
     lines: list[str]
     url: str
     photo: str | None = None
+    item_id: int | None = None          # satt för fynd – då kan inlägget markeras som sålt senare
+    topic: str | None = None            # ämnet i gruppen, om gruppen har Ämnen påslaget
+    buttons: list | None = None         # egna knappar i stället för "Öppna på Vinted"
+
+
+def topic_for(tags: list[str], cfg: dict) -> str | None:
+    """Ämnet ett fynd hör till, utifrån sökningens taggar (t.ex. [Dunjacka] -> "Dunjackor")."""
+    topics = cfg.get("topics") or {}
+    for tag in tags:
+        for name, topic_tags in topics.items():
+            if fold(tag) in {fold(str(t)) for t in topic_tags or []}:
+                return str(name)
+    return None
 
 
 def money(value: float) -> str:
@@ -610,7 +640,7 @@ def deal_message(deal: Deal, cfg: dict) -> Message:
     lines.append(f"🔎 {deal.search}")
     if deal.hashtags:
         lines.append("🏷 " + " ".join(deal.hashtags))  # tryck på en hashtagg i Telegram för att se alla med samma
-    return Message(title, lines, it.url, it.photo)
+    return Message(title, lines, it.url, it.photo, item_id=it.id)
 
 
 class NotifyError(Exception):
@@ -666,43 +696,121 @@ class TelegramNotifier:
     name = "Telegram"
 
     def __init__(self, token: str, chat_id: str, on_migrate=None, fallback_chat: str | None = None,
-                 hint_gate=None, legit_button: bool = False):
+                 hint_gate=None, legit_button: bool = False, store: "Store | None" = None):
         self.api = f"https://api.telegram.org/bot{token}"
-        self.legit_button = legit_button  # bara när LegitListener lyssnar, annars gör knappen inget
+        self.legit_button = legit_button  # bara när LegitListener lyssnar, annars gör knapparna inget
+        self.store = store                # ämnenas id:n och skickade fynd (för "❌ SÅLD")
+        self._forum: bool | None = None   # har gruppen Ämnen påslaget? Kollas en gång per körning
+        self._topic_warned = False
         self.chat_id = chat_id
         self.on_migrate = on_migrate  # anropas med nytt chat-id när en grupp blivit supergrupp
         self.fallback_chat = fallback_chat  # ägarens privata chatt, om boten inte får skriva i chat_id
         self.hint_gate = hint_gate or (lambda: True)  # avgör om förklaringen till ägaren får skickas nu
         self._warned = False
 
-    def _post(self, method: str, payload: dict, chat_id: str | None = None) -> None:
+    def _post(self, method: str, payload: dict, chat_id: str | None = None) -> dict:
+        """Anropar Telegram och returnerar det skickade meddelandet."""
         try:
-            http_post_json(f"{self.api}/{method}", {"chat_id": chat_id or self.chat_id, **payload})
+            response = http_post_json(f"{self.api}/{method}", {"chat_id": chat_id or self.chat_id, **payload})
         except NotifyError as e:
             if chat_id or not (new_id := e.migrate_to_chat_id):
                 raise
             log.info("Telegram: gruppen har blivit en supergrupp – nytt chat-id %s", "(dolt)" if QUIET else new_id)
-            self.chat_id = new_id
+            self.chat_id, self._forum = new_id, None
             if self.on_migrate:
                 self.on_migrate(new_id)
-            http_post_json(f"{self.api}/{method}", {"chat_id": self.chat_id, **payload})
+            payload = {k: v for k, v in payload.items() if k != "message_thread_id"}  # ämnena hörde till gamla gruppen
+            response = http_post_json(f"{self.api}/{method}", {"chat_id": self.chat_id, **payload})
+        result = (response or {}).get("result") if isinstance(response, dict) else None
+        return result if isinstance(result, dict) else {}
+
+    def _thread(self, chat_id: str, topic: str | None, fresh: bool = False) -> int | None:
+        """Ämnet (tråden) i gruppen för meddelandet – skapas första gången. None om gruppen saknar Ämnen."""
+        if not topic or not self.store or not str(chat_id).startswith("-"):
+            return None
+        if self._forum is None:
+            try:
+                info = http_post_json(f"{self.api}/getChat", {"chat_id": chat_id}) or {}
+                self._forum = bool((info.get("result") or {}).get("is_forum"))
+            except (NotifyError, OSError):
+                self._forum = False
+        if not self._forum:
+            return None
+        key = f"topic:{chat_id}:{topic}"
+        if not fresh and (saved := self.store.get_setting(key)):
+            return int(saved)
+        try:
+            created = http_post_json(f"{self.api}/createForumTopic", {"chat_id": chat_id, "name": topic[:128]}) or {}
+            thread = int(created["result"]["message_thread_id"])
+        except (NotifyError, OSError, KeyError, TypeError, ValueError) as e:
+            if not self._topic_warned:
+                self._topic_warned = True
+                why = e.description if isinstance(e, NotifyError) else type(e).__name__
+                log.warning("Telegram: kunde inte skapa ämnet '%s' (%s) – ge boten rätten 'Hantera ämnen'. "
+                            "Fynden skickas utan ämnen så länge.", topic, why)
+            self._forum = False
+            return None
+        self.store.set_setting(key, str(thread))
+        return thread
 
     def _deliver(self, msg: Message, chat_id: str | None = None) -> None:
         text = f"<b>{escape(msg.title)}</b>\n" + "\n".join(escape(line) for line in msg.lines)
-        buttons = [{"text": "Öppna på Vinted", "url": msg.url}]
-        if self.legit_button and (m := _ITEM_URL.search(msg.url)):
-            buttons.append({"text": "🔍 Legitcheck", "callback_data": f"legit:{m.group(1)}"})
-        markup = {"inline_keyboard": [buttons]}
+        target = str(chat_id or self.chat_id)
+        if msg.buttons is not None:
+            rows = msg.buttons
+        else:
+            rows = [[{"text": "Öppna på Vinted", "url": msg.url}]]
+            item_id = msg.item_id or (int(m.group(1)) if (m := _ITEM_URL.search(msg.url)) else None)
+            if self.legit_button and item_id:
+                rows[0].append({"text": "🔍 Legitcheck", "callback_data": f"legit:{item_id}"})
+                if msg.item_id and target.startswith("-"):  # i en grupp: så att inte två köper samma plagg
+                    rows.append([{"text": "🙋 Jag tar den", "callback_data": f"claim:{item_id}"}])
+        payload: dict = {"parse_mode": "HTML", "reply_markup": {"inline_keyboard": rows}}
+        topic_key = None
+        if thread := self._thread(target, msg.topic):
+            payload["message_thread_id"], topic_key = thread, f"topic:{target}:{msg.topic}"
+
+        def send(method: str, body: dict) -> dict:
+            try:
+                return self._post(method, {**payload, **body}, chat_id)
+            except NotifyError as e:
+                if not topic_key or "thread not found" not in e.description.lower():
+                    raise
+                self.store.set_setting(topic_key, "")  # ämnet har tagits bort – skapa det igen
+                new_thread = self._thread(target, msg.topic, fresh=True)
+                retry = {k: v for k, v in payload.items() if k != "message_thread_id"}
+                if new_thread:
+                    retry["message_thread_id"] = new_thread
+                return self._post(method, {**retry, **body}, chat_id)
+
+        sent, kind = None, "text"
         if msg.photo and len(text) <= 1024:  # bildtexter får vara max 1024 tecken
             try:
-                self._post("sendPhoto", {"photo": msg.photo, "caption": text, "parse_mode": "HTML",
-                                         "reply_markup": markup}, chat_id)
-                return
+                sent, kind = send("sendPhoto", {"photo": msg.photo, "caption": text}), "photo"
             except NotifyError as e:
                 if e.status in (401, 403, 404, 429):  # 429: för många meddelanden – vänta till nästa körning
                     raise
                 log.debug("Telegram tog inte emot bilden (%s) – skickar som text", e)
-        self._post("sendMessage", {"text": text, "parse_mode": "HTML", "reply_markup": markup}, chat_id)
+        if sent is None:
+            sent = send("sendMessage", {"text": text})
+        if self.store and msg.item_id and sent.get("message_id"):
+            chat = str((sent.get("chat") or {}).get("id") or target)
+            self.store.record_sent(chat, int(sent["message_id"]), msg.item_id, kind, text, msg.url)
+
+    def mark_sold(self, chat_id: str, message_id: int, kind: str, html: str, url: str, status: str) -> None:
+        """Ändrar ett fynd i gruppen till "❌ SÅLD" (eller "❌ BORTTAGEN")."""
+        limit = 1024 if kind == "photo" else 4096
+        text = f"❌ <b>{escape(status)}</b>\n{html}"
+        if len(text) > limit:
+            text = re.sub(r"&[^;\s]*$", "", text[:limit])  # klipp inte mitt i "&amp;"
+        field_name, method = ("caption", "editMessageCaption") if kind == "photo" else ("text", "editMessageText")
+        try:
+            http_post_json(f"{self.api}/{method}", {
+                "chat_id": chat_id, "message_id": message_id, field_name: text, "parse_mode": "HTML",
+                "reply_markup": {"inline_keyboard": [[{"text": "Öppna på Vinted", "url": url}]]}})
+        except NotifyError as e:
+            if "not modified" not in e.description.lower() and "not found" not in e.description.lower():
+                raise
 
     def send(self, msg: Message) -> None:
         try:
@@ -804,7 +912,7 @@ def build_notifiers(cfg: dict, store: "Store | None" = None, legit_button: bool 
                 fallback = store.get_setting(telegram_chat_key(token) + ":private") or None
             notifiers.append(TelegramNotifier(token, chat, on_migrate=remember, fallback_chat=fallback,
                                               hint_gate=daily_gate(store, telegram_chat_key(token) + ":hint"),
-                                              legit_button=legit_button))
+                                              legit_button=legit_button, store=store))
     if webhook := setting("DISCORD_WEBHOOK_URL", conf.get("discord_webhook")):
         notifiers.append(DiscordNotifier(webhook))
     if topic := setting("NTFY_TOPIC", conf.get("ntfy_topic")):
@@ -1203,6 +1311,11 @@ class Store:
             CREATE TABLE IF NOT EXISTS seen_by (
                 search TEXT, item_id INTEGER, price REAL, last_seen INTEGER,
                 PRIMARY KEY (search, item_id)) WITHOUT ROWID;
+            -- Fynd som skickats till Telegram, så att de kan markeras "❌ SÅLD" när plagget sålts.
+            CREATE TABLE IF NOT EXISTS sent (
+                chat_id TEXT, message_id INTEGER, item_id INTEGER, kind TEXT, html TEXT, url TEXT,
+                ts INTEGER, checks INTEGER NOT NULL DEFAULT 0, status TEXT,
+                PRIMARY KEY (chat_id, message_id));
         """)
         if upgrading:  # äldre databas: där räknades allt som setts som sett av alla sökningar
             self.db.execute("INSERT OR IGNORE INTO seen_by "
@@ -1262,6 +1375,38 @@ class Store:
         self.db.executemany("UPDATE seen SET last_seen = ? WHERE item_id = ?", [(now, i) for i in item_ids])
         self.db.commit()
 
+    def record_sent(self, chat_id: str, message_id: int, item_id: int, kind: str, html: str, url: str) -> None:
+        self.db.execute("INSERT OR REPLACE INTO sent (chat_id, message_id, item_id, kind, html, url, ts) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)", (chat_id, message_id, item_id, kind, html, url, int(time.time())))
+        self.db.commit()
+
+    # Efter hur lång tid ett skickat fynd kollas igen (1:a, 2:a, 3:e gången), i sekunder.
+    SOLD_CHECKS = (3600, 6 * 3600, 24 * 3600)
+
+    def due_sold_checks(self, limit: int) -> list[tuple]:
+        """Skickade fynd som är dags att kolla igen, äldst först: (chat, meddelande, annons, typ, html, url)."""
+        now = int(time.time())
+        rows = self.db.execute(
+            "SELECT chat_id, message_id, item_id, kind, html, url, ts, checks FROM sent "
+            "WHERE status IS NULL AND checks < ? ORDER BY ts", (len(self.SOLD_CHECKS),)).fetchall()
+        due = [r[:6] for r in rows if now - r[6] >= self.SOLD_CHECKS[r[7]]]
+        return due[:limit]
+
+    def sold_checked(self, item_id: int, status: str | None) -> None:
+        """status: t.ex. "SÅLD" när plagget är sålt, None om det fortfarande är till salu."""
+        if status:
+            self.db.execute("UPDATE sent SET status = ? WHERE item_id = ?", (status, item_id))
+        else:
+            self.db.execute("UPDATE sent SET checks = checks + 1 WHERE item_id = ? AND status IS NULL", (item_id,))
+        self.db.commit()
+
+    def top_deals(self, since: int, limit: int = 5) -> list[tuple]:
+        """Dygnets bästa fynd som inte sålts: (märke, titel, pris, vinst, länk, sökning)."""
+        return self.db.execute(
+            "SELECT d.brand, d.title, d.price, MAX(d.profit), d.url, d.search FROM deals d "
+            "WHERE d.ts >= ? AND NOT EXISTS (SELECT 1 FROM sent s WHERE s.item_id = d.item_id AND s.status IS NOT NULL) "
+            "GROUP BY d.item_id ORDER BY MAX(d.profit) DESC LIMIT ?", (since, limit)).fetchall()
+
     def log_deal(self, deal: Deal) -> None:
         it = deal.item
         self.db.execute("UPDATE seen SET notified = 1 WHERE item_id = ?", (it.id,))
@@ -1281,6 +1426,10 @@ class Store:
         cutoff = int(time.time()) - days * 86400
         self.db.execute("DELETE FROM seen WHERE last_seen < ?", (cutoff,))
         self.db.execute("DELETE FROM seen_by WHERE last_seen < ?", (cutoff,))
+        self.db.execute("DELETE FROM sent WHERE ts < ?", (int(time.time()) - 14 * 86400,))
+        # "🙋 Jag tar den" på fynd som inte längre finns kvar i sent.
+        self.db.execute("DELETE FROM settings WHERE key LIKE 'claim:%' AND NOT EXISTS (SELECT 1 FROM sent "
+                        "WHERE settings.key = 'claim:' || sent.chat_id || ':' || sent.message_id)")
         self.db.commit()
 
 
@@ -1322,6 +1471,11 @@ class Listing:
     catalog_ids: list[int] = field(default_factory=list)  # kategorierna från Herr ner till annonsens
     verification_offered: bool = False  # Vinted erbjuder äkthetskontroll för annonsen
     reserved: bool = False
+    status: str = ""                    # Vinteds statusrad, t.ex. "Såld"
+
+    @property
+    def sold(self) -> bool:
+        return fold(self.status) in ("sald", "sold")
 
 
 def parse_listing(body: str, base_url: str, item_id: int) -> Listing | None:
@@ -1377,6 +1531,7 @@ def parse_listing(body: str, base_url: str, item_id: int) -> Listing | None:
                                        for c in re.findall(r"/catalog/(\d+)", str(crumb.get("url") or "")))),
         verification_offered=bool((pricing.get("services") or {}).get("itemVerification")),
         reserved=bool((plugins.get("ask_seller") or {}).get("is_reserved")),
+        status=_txt((plugins.get("buyer_item_status") or {}).get("title")),
     )
 
 
@@ -1490,7 +1645,9 @@ def legit_check(listing: Listing, searches: list[Search], tips: dict) -> Message
         lines += ["✅ Talar för"] + [f"• {g}" for g in good]
     if listing.verification_offered:
         lines.append("🛡 Vinted erbjuder äkthetskontroll för den här annonsen – välj den när du köper.")
-    if listing.reserved:
+    if listing.sold:
+        lines.append("❌ Annonsen är redan såld.")
+    elif listing.reserved:
         lines.append("⏳ Annonsen är reserverad.")
 
     entry = brand_tips(listing.brand, tips)
@@ -1507,6 +1664,12 @@ def legit_check(listing: Listing, searches: list[Search], tips: dict) -> Message
     lines += ["", "Boten kan inte se på bilderna om plagget är äkta. Det här är en riskbedömning, "
                   "inte en garanti."]
     return Message(f"🔍 Legitcheck: {listing.brand or 'okänt märke'}{price}", lines, listing.url)
+
+
+def _thread_of(msg: dict) -> int | None:
+    """Ämnet (forumtråden) ett meddelande ligger i, om gruppen har Ämnen."""
+    thread = msg.get("message_thread_id") if isinstance(msg, dict) and msg.get("is_topic_message") else None
+    return int(thread) if isinstance(thread, int) else None
 
 
 def legit_help() -> Message:
@@ -1629,15 +1792,19 @@ class LegitListener:
     def handle(self, update: dict, store: "Store") -> None:
         allowed = self.allowed_chats(store)
         query = update.get("callback_query")
-        if isinstance(query, dict):  # knappen "🔍 Legitcheck" under ett fynd
+        if isinstance(query, dict):  # knapparna under ett fynd
             msg = query.get("message") or {}
             chat = str((msg.get("chat") or {}).get("id", ""))
-            m = re.fullmatch(r"legit:(\d+)", str(query.get("data") or ""))
+            data = str(query.get("data") or "")
+            if data.startswith("claim:") and chat in allowed:
+                self.claim(query, msg, chat, store)
+                return
+            m = re.fullmatch(r"legit:(\d+)", data)
             item_id = int(m.group(1)) if m else None
             ok = item_id and chat in allowed
             self.answer(query, "Kollar annonsen …" if ok else "")
             if ok:
-                self.check(item_id, chat, msg.get("message_id"), (query.get("from") or {}).get("id"))
+                self.check(item_id, chat, msg.get("message_id"), (query.get("from") or {}).get("id"), _thread_of(msg))
             return
         msg = update.get("message")
         if not isinstance(msg, dict):
@@ -1652,48 +1819,77 @@ class LegitListener:
             return  # vanligt kommando för andra botar – svara bara på /help@dennabot
         if command not in ("/legit", "/hjalp", "/help") or chat not in allowed:
             return
+        thread = _thread_of(msg)
         if command != "/legit":
-            self.reply(chat, msg.get("message_id"), legit_help())
+            self.reply(chat, msg.get("message_id"), legit_help(), thread)
             return
         item_id = item_id_in(parts[1] if len(parts) > 1 else "") or item_id_in(msg.get("reply_to_message"))
         if not item_id:
-            self.reply(chat, msg.get("message_id"), legit_help())
+            self.reply(chat, msg.get("message_id"), legit_help(), thread)
             return
-        self.check(item_id, chat, msg.get("message_id"), (msg.get("from") or {}).get("id"))
+        self.check(item_id, chat, msg.get("message_id"), (msg.get("from") or {}).get("id"), thread)
 
-    def check(self, item_id: int, chat: str, reply_to, user) -> None:
+    def claim(self, query: dict, msg: dict, chat: str, store: "Store") -> None:
+        """"🙋 Jag tar den": första som trycker får fyndet, samma person kan släppa det igen."""
+        user = query.get("from") or {}
+        name = str(user.get("first_name") or user.get("username") or "Någon")[:20]
+        key = f"claim:{chat}:{msg.get('message_id')}"
+        current = json.loads(store.get_setting(key) or "null")
+        if current and current.get("id") != user.get("id"):
+            self.answer(query, f"{current.get('name', 'Någon')} har redan tagit den.")
+            return
+        if current:
+            store.set_setting(key, "")
+            label, note = "🙋 Jag tar den", "Du släppte den."
+        else:
+            store.set_setting(key, json.dumps({"id": user.get("id"), "name": name}, ensure_ascii=False))
+            label, note = f"🙋 {name} tar den", "Den är din – köp den på Vinted innan någon annan gör det!"
+        self.answer(query, note)
+        rows = [[dict(b, text=label) if str(b.get("callback_data", "")).startswith("claim:") else b for b in row]
+                for row in ((msg.get("reply_markup") or {}).get("inline_keyboard") or [])]
+        try:
+            http_post_json(f"https://api.telegram.org/bot{self.token}/editMessageReplyMarkup", {
+                "chat_id": chat, "message_id": msg.get("message_id"), "reply_markup": {"inline_keyboard": rows}})
+        except NotifyError as e:
+            log.warning("Kunde inte uppdatera knappen (%s)", e.description if not QUIET else e.status)
+        except OSError as e:
+            log.warning("Kunde inte nå Telegram (%s)", e)
+
+    def check(self, item_id: int, chat: str, reply_to, user, thread: int | None = None) -> None:
         now = time.monotonic()
         if user is not None and now - self.last_by_user.get(user, -1e9) < 5:
             return  # samma person tryckte flera gånger
         self.recent = [t for t in self.recent if now - t < 600]
         url = f"https://www.{self.cfg['domain']}/items/{item_id}"
         if len(self.recent) >= 30:
-            self.reply(chat, reply_to, Message("🔍 Legitcheck", ["Många kontroller just nu – vänta några minuter."], url))
+            self.reply(chat, reply_to, Message("🔍 Legitcheck", ["Många kontroller just nu – vänta några minuter."], url), thread)
             return
         self.last_by_user[user] = now
         self.recent.append(now)
         try:
             body = self.client.fetch_listing_page(item_id)
         except Blocked:
-            self.reply(chat, reply_to, Message("🔍 Legitcheck", ["Vinted svarar inte just nu – försök igen om en stund."], url))
+            self.reply(chat, reply_to, Message("🔍 Legitcheck", ["Vinted svarar inte just nu – försök igen om en stund."], url), thread)
             return
         except FetchError as e:
-            self.reply(chat, reply_to, Message("🔍 Legitcheck", [f"Kunde inte hämta annonsen ({e})."], url))
+            self.reply(chat, reply_to, Message("🔍 Legitcheck", [f"Kunde inte hämta annonsen ({e})."], url), thread)
             return
         listing = parse_listing(body, self.client.base, item_id) if body else None
         if listing is None:
-            self.reply(chat, reply_to, Message("🔍 Legitcheck", ["Hittade inte annonsen – den kan vara såld eller borttagen."], url))
+            self.reply(chat, reply_to, Message("🔍 Legitcheck", ["Hittade inte annonsen – den kan vara såld eller borttagen."], url), thread)
             return
-        self.reply(chat, reply_to, legit_check(listing, self.searches, self.tips))
+        self.reply(chat, reply_to, legit_check(listing, self.searches, self.tips), thread)
         log.info("Legitcheck: svarade på en kontroll")
 
-    def reply(self, chat: str, reply_to, msg: Message) -> None:
+    def reply(self, chat: str, reply_to, msg: Message, thread: int | None = None) -> None:
         text = f"<b>{escape(msg.title)}</b>\n" + "\n".join(escape(line) for line in msg.lines)
         payload: dict = {"chat_id": chat, "text": text[:4096], "parse_mode": "HTML",
                          "link_preview_options": {"is_disabled": True},
                          "reply_markup": {"inline_keyboard": [[{"text": "Öppna på Vinted", "url": msg.url}]]}}
         if reply_to:
             payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+        if thread:
+            payload["message_thread_id"] = thread  # svara i samma ämne
         try:
             http_post_json(f"https://api.telegram.org/bot{self.token}/sendMessage", payload)
         except NotifyError as e:  # bara Telegrams förklaring – hela svaret kan innehålla chatt-id
@@ -1769,7 +1965,7 @@ class Bot:
                     self.shown.add(item.id)
                 if dropped:
                     deal.price_drop_from = prev
-                self.notify(deal)
+                self.notify(deal, topic_for(search.tags, self.cfg))
                 found += 1
             if still_there:
                 self.store.touch(search.name, still_there)
@@ -1782,8 +1978,9 @@ class Bot:
                 log.info("%s: första körningen – befintliga annonser sparade, notiser kommer för nya", search.name)
         return found
 
-    def notify(self, deal: Deal) -> None:
+    def notify(self, deal: Deal, topic: str | None = None) -> None:
         msg = deal_message(deal, self.cfg)
+        msg.topic = topic
         if not QUIET:
             print_message(msg)
         if self.dry_run:
@@ -1867,7 +2064,77 @@ class Bot:
         finally:
             if rotate:
                 self.store.set_setting("next_search", str((start_at + done) % n))
+        # Sålt-kollen får köra en minut efter tidsgränsen: i molnet lyssnar boten ändå på
+        # Telegram ett par minuter till, så det tar ingen tid från sökningarna.
+        try:
+            self.check_sold(max_checks=6, deadline=started + self.time_budget + 60 if self.time_budget else None)
+        except Blocked:
+            pass  # Vinted spärrar just nu – kollas nästa varv
+        except Exception:
+            log.exception("Kunde inte kolla om fynden är sålda")
         return total
+
+    def check_sold(self, max_checks: int = 6, deadline: float | None = None) -> int:
+        """Kollar äldre fynd igen och ändrar dem till "❌ SÅLD" i Telegram när plaggen är sålda."""
+        tg = [n for n in self.notifiers if isinstance(n, TelegramNotifier)]
+        if self.dry_run or not self.store or not tg or not hasattr(self.client, "fetch_listing_page"):
+            return 0
+        rows = self.store.due_sold_checks(limit=max_checks * 3)
+        items: dict[int, list[tuple]] = {}
+        for row in rows:
+            items.setdefault(row[2], []).append(row)
+        marked = 0
+        for i, (item_id, messages) in enumerate(list(items.items())[:max_checks]):
+            if i:
+                if deadline and time.monotonic() >= deadline:
+                    break
+                self._pause()
+            try:
+                body = self.client.fetch_listing_page(item_id)
+            except Blocked:
+                raise  # Vinted spärrar – sluta kolla det här varvet
+            except FetchError as e:
+                log.debug("Kunde inte kolla om ett fynd är sålt: %s", e)
+                continue  # nytt försök nästa varv
+            listing = parse_listing(body, self.client.base, item_id) if body else None
+            status = "BORTTAGEN" if body is None else ("SÅLD" if listing and listing.sold else None)
+            if status:
+                for chat, message_id, _, kind, html, url in messages:
+                    try:
+                        tg[0].mark_sold(chat, message_id, kind, html, url, status)
+                    except Exception as e:  # bara Telegrams förklaring – hela svaret kan innehålla chatt-id
+                        log.warning("Kunde inte markera ett fynd som sålt: %s",
+                                    e.description if isinstance(e, NotifyError) else type(e).__name__)
+                marked += 1
+            self.store.sold_checked(item_id, status)
+        if marked:
+            log.info("Markerade %d fynd som sålda.", marked)
+        return marked
+
+    def daily_summary(self, now: datetime | None = None) -> bool:
+        """Skickar "Dagens 5 bästa fynd" en gång per dag, efter daily_summary_hour (svensk tid)."""
+        hour = self.cfg.get("daily_summary_hour")
+        if hour is None or hour is False or self.dry_run or not self.store or not self.notifiers:
+            return False
+        now = now or datetime.now(STOCKHOLM)
+        today = now.date().isoformat()
+        if now.hour < int(hour) or self.store.get_setting("summary:last") == today:
+            return False
+        rows = self.store.top_deals(int(now.timestamp()) - 86400)
+        self.store.set_setting("summary:last", today)
+        if not rows:
+            return False
+        lines, buttons = [], []
+        for i, (brand, title, price, profit, url, search) in enumerate(rows, 1):
+            lines.append(f"{i}. {brand or 'Okänt märke'} – {money(price)} kr (≈ +{money(profit)} kr) · {title[:60]}")
+            buttons.append([{"text": f"{i}. {brand or 'Fynd'} – {money(price)} kr", "url": url}])
+        msg = Message(f"⭐ Dagens {len(rows)} bästa fynd", lines + ["", "Tryck på en knapp för att öppna annonsen."],
+                      f"https://www.{self.cfg['domain']}/", topic=self.cfg.get("summary_topic") or None, buttons=buttons)
+        if not self._deliver(msg):
+            self.store.set_setting("summary:last", "")  # försök igen nästa varv
+            return False
+        log.info("Skickade dagens bästa fynd.")
+        return True
 
     def run_forever(self) -> None:
         backoff = 0
@@ -1880,6 +2147,10 @@ class Bot:
                 log.warning("Vinted nekade anropet (%s) – pausar %d s och försöker igen", e, backoff)
                 time.sleep(backoff)
                 continue
+            try:
+                self.daily_summary()
+            except Exception:
+                log.exception("Kunde inte skicka dagens bästa fynd")
             wait = float(self.cfg["interval_seconds"]) * random.uniform(0.8, 1.2)
             log.info("Varv klart: %d fynd. Nästa sökning om %d s.", found, wait)
             time.sleep(wait)
@@ -2085,6 +2356,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.once:
             log.info("Klart: %d fynd.", bot.run_cycle())
+            try:
+                bot.daily_summary()
+            except Exception:
+                log.exception("Kunde inte skicka dagens bästa fynd")
         else:
             bot.run_forever()
     except Blocked as e:
