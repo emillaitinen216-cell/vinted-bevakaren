@@ -747,6 +747,11 @@ class TelegramNotifier:
         """Nytt varv: kolla igen om gruppen har Ämnen (ägaren kan ha slagit på dem eller gett rätten)."""
         self._forum, self._no_topic = None, set()
 
+    def prepare_topics(self, topics: list[str]) -> None:
+        """Skapar gruppens ämnen direkt, så att de syns redan innan första fyndet."""
+        for topic in topics:
+            self._thread(str(self.chat_id), topic)
+
     def _thread(self, chat_id: str, topic: str | None, fresh: bool = False) -> int | None:
         """Ämnet (tråden) i gruppen för meddelandet – skapas första gången. None om gruppen saknar Ämnen."""
         if not topic or not self.store or not str(chat_id).startswith("-") or topic in self._no_topic:
@@ -2059,6 +2064,8 @@ class Bot:
         for notifier in self.notifiers:
             if isinstance(notifier, TelegramNotifier):
                 notifier.new_run()
+                if not self.dry_run:
+                    notifier.prepare_topics(self.topic_names())
         try:
             self.flush_pending()
         except Exception:
@@ -2103,6 +2110,13 @@ class Bot:
         except Exception:
             log.exception("Kunde inte kolla om fynden är sålda")
         return total
+
+    def topic_names(self) -> list[str]:
+        names = [str(name) for name in self.cfg.get("topics") or {}]
+        hour = self.cfg.get("daily_summary_hour")
+        if hour is not None and hour is not False and self.cfg.get("summary_topic"):
+            names.append(str(self.cfg["summary_topic"]))
+        return names
 
     def check_sold(self, max_checks: int = 6, deadline: float | None = None) -> int:
         """Kollar äldre fynd igen och ändrar dem till "❌ SÅLD" i Telegram när plaggen är sålda."""

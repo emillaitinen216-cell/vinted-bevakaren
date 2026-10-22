@@ -1505,6 +1505,16 @@ class GroupFeatureTests(unittest.TestCase):
         self.notifier(api2).send(self.deal_msg(4))
         self.assertEqual((api2.made("createForumTopic"), api2.made("sendPhoto")[0]["message_thread_id"]), ([], 500))
 
+    def test_topics_are_created_at_start_of_run(self):
+        api = FakeBotApi()
+        bot = vb.Bot(self.cfg, [], FakeClient(), self.store, [self.notifier(api)])
+        bot.run_cycle()
+        bot.run_cycle()
+        self.assertEqual([p["name"] for p in api.made("createForumTopic")],
+                         ["Dunjackor", "Jackor", "Jeans", "Tröjor & skjortor", "Byxor & shorts", "⭐ Dagens bästa"])
+        self.assertEqual(len(api.made("getChat")), 2)            # en gång per varv
+        self.assertEqual(api.made("sendPhoto") + api.made("sendMessage"), [])
+
     def test_group_without_topics_gets_plain_messages(self):
         api = FakeBotApi(forum=False)
         self.notifier(api).send(self.deal_msg())
