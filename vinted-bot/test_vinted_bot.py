@@ -1,4 +1,5 @@
 """Tester för vinted_bot. Kör: python -m unittest -v"""
+import http.client
 import io
 import json
 import os
@@ -1560,9 +1561,36 @@ class GroupFeatureTests(unittest.TestCase):
             return real_call(url, payload, timeout)
 
         tg = self.notifier(flaky)
-        for item_id in (1, 2, 3):
-            tg.send(self.deal_msg(item_id))
-        self.assertEqual([p.get("message_thread_id") for p in api.made("sendPhoto")], [None, None, 500])
+        clock = [1000.0]
+        with mock.patch.object(vb.time, "monotonic", side_effect=lambda: clock[0]):
+            for item_id in (1, 2, 3, 4):
+                tg.send(self.deal_msg(item_id))
+                clock[0] += 61 if item_id == 2 else 1       # efter en minut frågar boten igen
+        self.assertEqual([p.get("message_thread_id") for p in api.made("sendPhoto")], [None, None, None, 500])
+        self.assertEqual(len(api.made("getChat")), 2)
+
+    def test_telegram_down_costs_one_question_per_minute(self):
+        calls = []
+
+        def down(url, payload, timeout=20):
+            calls.append(url.rsplit("/", 1)[1])
+            raise http.client.IncompleteRead(b"")
+
+        tg = self.notifier(down)
+        bot = vb.Bot(self.cfg, [], FakeClient(), self.store, [tg])
+        bot.run_cycle()                                         # ämnena: ett försök, sedan vidare
+        self.assertEqual(calls, ["getChat"])
+        with self.assertRaises(http.client.IncompleteRead):
+            tg.send(self.deal_msg())                            # skickas utan ämne – frågar inte igen
+        self.assertEqual(calls, ["getChat", "sendPhoto"])
+
+    def test_unexpected_error_while_preparing_topics_does_not_stop_the_run(self):
+        notifier = self.notifier(FakeBotApi())
+        bot = vb.Bot(self.cfg, [make_search(self.cfg)], FakeClient(), self.store, [notifier])
+        with mock.patch.object(notifier, "prepare_topics", side_effect=sqlite3.OperationalError("database is locked")), \
+                self.assertLogs("vinted-bot", "WARNING"):
+            self.assertEqual(bot.run_cycle(), 0)
+        self.assertEqual(bot.client.calls, [1])                 # sökningen kördes ändå
 
     def test_missing_right_for_one_topic_keeps_the_others(self):
         self.store.set_setting(f"topic:{self.GROUP}:Dunjackor", "77")
@@ -1818,13 +1846,19 @@ class GroupFeatureTests(unittest.TestCase):
             return "fynd" if deal else why
 
         for title in ("Moncler dunjacka dam", "Moncler Kids 14 år", "Moncler women jacket", "Moncler damjacka",
-                      "Moncler dunjacka dam, inte herr", "Moncler jacka för barn"):
+                      "Moncler dunjacka dam, inte herr", "Moncler jacka för barn", "Moncler dunjacka barn 140",
+                      "Moncler kid jacket 10y", "Moncler dam inte för herr", "Women's Moncler, not suitable for men",
+                      "Kurtka damska Moncler, nie męska", "Moncler Damen Daunenjacke, nicht Herren",
+                      "Doudoune Moncler femme, pas homme", "Moncler dam men liten i storleken"):
             self.assertNotEqual(verdict("Moncler", title, "Moncler", 1000), "fynd", title)
         for title in ("Moncler Maya herr", "Moncler jacka Amsterdam", "Moncler damaged zip", "Moncler herr/dam",
-                      "Moncler unisex dam", "Moncler veste homme femme", "Moncler men's women's"):
+                      "Moncler unisex dam", "Moncler veste homme femme", "Moncler men's women's",
+                      "Moncler men/women", "Moncler jacket men & women", "Moncler men women size 3",
+                      "Doudoune Moncler mixte femme", "Kurtka Moncler uniseks damska"):
             self.assertEqual(verdict("Moncler", title, "Moncler", 1000), "fynd", title)
-        # "barn jacket" och "kid mohair" är herrplagg, inte barnkläder.
+        # "barn coat" och "kid mohair" är herrplagg, inte barnkläder – men "barn 140" är det.
         self.assertEqual(verdict("Carhartt jackor", "Carhartt Barn Coat brun", "Carhartt", 100), "fynd")
+        self.assertNotEqual(verdict("Carhartt jackor", "Carhartt barn coat barn 140", "Carhartt", 100), "fynd")
         self.assertEqual(verdict("Acne Studios tröjor", "Acne Studios kid mohair cardigan", "Acne Studios", 200), "fynd")
 
 

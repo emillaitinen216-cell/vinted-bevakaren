@@ -80,6 +80,7 @@ DEFAULTS: dict = {
         "Tillfredsställande": 0.6,
     },
     "exclude_keywords": [],
+    "exclude_exceptions": [],           # fraser som aldrig räknas som exclude-ord ("barn coat")
     "womens_keywords": [],              # damplagg – hoppas över om titeln inte också säger unisex/herr
     "unisex_keywords": [],
     "premium_keywords": {},
@@ -141,6 +142,9 @@ def hashtag(text: str) -> str:
 # Inte "utan" – "inte äkta utan kopia" betyder att det ÄR en kopia.
 _NEGATIONS = ("ingen", "inga", "inget", "inte", "ej", "not", "non", "no")
 _FILLER = ("en", "ett", "a", "an", "nan", "nagon", "nagot", "nagra", "some", "any")
+# "inte för herr", "not suitable for men", "nie męska", "nicht Herren", "geen heren", "pas homme"
+_UNISEX_NEGATED = re.compile(r"(?<!\w)(?:%s)(?:\W+\w+){0,2}\W*$" % "|".join(
+    ("inte", "ej", "ingen", "inga", "not", "no", "non", "nie", "nicht", "kein", "keine", "geen", "niet", "pas")))
 _NEGATED_BEFORE = re.compile(r"(?<!\w)(?:%s)\s+(?:(?:%s)\s+)?$" % ("|".join(_NEGATIONS), "|".join(_FILLER)))
 
 
@@ -202,6 +206,7 @@ class Search:
     tags: list[str] = field(default_factory=list)
     womens: list[tuple[str, re.Pattern]] = field(default_factory=list)
     unisex: list[re.Pattern] = field(default_factory=list)
+    exclude_exceptions: list[re.Pattern] = field(default_factory=list)
 
     def rule_for(self, brand: str) -> BrandRule | None:
         brand_words = words(brand)
@@ -305,6 +310,7 @@ def build_search(raw: dict, cfg: dict) -> Search:
         tags=[str(tag) for tag in (raw.get("tags") or [])],
         womens=[(str(k), keyword_re(str(k))) for k in womens],
         unisex=[keyword_re(str(k)) for k in cfg.get("unisex_keywords") or []],
+        exclude_exceptions=[keyword_re(str(k)) for k in cfg.get("exclude_exceptions") or []],
     )
 
 
@@ -565,14 +571,20 @@ def evaluate(item: Item, search: Search, cfg: dict) -> tuple[Deal | None, str]:
     if not rule.min_price <= item.price <= rule.max_price:
         return None, f"pris {item.price:.0f} utanför {rule.min_price:.0f}–{rule.max_price:.0f}"
     text = fold(item.title)
-    def mentions(pattern: re.Pattern) -> bool:
+    def mentions(pattern: re.Pattern, text: str = text) -> bool:
         return any(not negated(text, m.start()) for m in pattern.finditer(text))
 
+    def for_men() -> bool:  # "herr/dam", "unisex" – men inte "dam, inte för herr"
+        return any(not _UNISEX_NEGATED.search(text[:m.start()]) for u in search.unisex for m in u.finditer(text))
+
+    checked = text
+    for exception in search.exclude_exceptions:  # "barn coat" är ett herrplagg, inte barnkläder
+        checked = exception.sub(" ", checked)
     for keyword, pattern in search.exclude:
-        if mentions(pattern):
+        if mentions(pattern, checked):
             return None, f"innehåller '{keyword}'"
-    for keyword, pattern in search.womens:  # "herr/dam" och "unisex" passar herrar också
-        if mentions(pattern) and not any(mentions(u) for u in search.unisex):
+    for keyword, pattern in search.womens:
+        if mentions(pattern) and not for_men():
             return None, f"damplagg ('{keyword}')"
     if search.sizes and item.size and not search.sizes & set(words(item.size)):
         return None, f"storlek {item.size}"
@@ -707,7 +719,8 @@ def http_post_json(url: str, payload: dict, timeout: float = 20):
 
 def temporary_error(e: Exception) -> bool:
     """Nätverksfel, för många anrop eller fel hos Telegram – värt att försöka igen senare."""
-    return isinstance(e, OSError) or (isinstance(e, NotifyError) and (e.status == 429 or e.status >= 500))
+    return isinstance(e, (OSError, http.client.HTTPException)) or (
+        isinstance(e, NotifyError) and (e.status == 429 or e.status >= 500))
 
 
 class TelegramNotifier:
@@ -720,6 +733,8 @@ class TelegramNotifier:
         self.store = store                # ämnenas id:n och skickade fynd (för "❌ SÅLD")
         self._forum: bool | None = None   # har gruppen Ämnen påslaget? Kollas en gång per varv
         self._no_topic: set[str] = set()  # ämnen som inte gick att skapa det här varvet
+        self._forum_retry = 0.0            # Telegram svarade inte: fråga inte igen förrän då (monotonic)
+        self._temporary = False            # senaste _thread stötte på ett tillfälligt fel
         self._topic_warned = False
         self.chat_id = chat_id
         self.on_migrate = on_migrate  # anropas med nytt chat-id när en grupp blivit supergrupp
@@ -745,25 +760,32 @@ class TelegramNotifier:
 
     def new_run(self) -> None:
         """Nytt varv: kolla igen om gruppen har Ämnen (ägaren kan ha slagit på dem eller gett rätten)."""
-        self._forum, self._no_topic = None, set()
+        self._forum, self._no_topic, self._forum_retry = None, set(), 0.0
 
     def prepare_topics(self, topics: list[str]) -> None:
         """Skapar gruppens ämnen direkt, så att de syns redan innan första fyndet."""
         for topic in topics:
             self._thread(str(self.chat_id), topic)
+            if self._temporary or not self._forum:
+                break  # Telegram svarar inte (nytt försök nästa varv), eller gruppen saknar Ämnen
 
     def _thread(self, chat_id: str, topic: str | None, fresh: bool = False) -> int | None:
         """Ämnet (tråden) i gruppen för meddelandet – skapas första gången. None om gruppen saknar Ämnen."""
+        self._temporary = False
         if not topic or not self.store or not str(chat_id).startswith("-") or topic in self._no_topic:
             return None
         if self._forum is None:
+            if time.monotonic() < self._forum_retry:
+                return None
             try:
                 info = http_post_json(f"{self.api}/getChat", {"chat_id": chat_id}) or {}
                 self._forum = bool((info.get("result") or {}).get("is_forum"))
-            except (NotifyError, OSError, ValueError) as e:
+            except (NotifyError, OSError, ValueError, http.client.HTTPException) as e:
                 if not temporary_error(e):
                     self._forum = False
-                return None  # tillfälligt fel: kolla igen vid nästa meddelande
+                self._temporary = temporary_error(e)
+                self._forum_retry = time.monotonic() + 60  # Telegram hänger: vänta en minut med nästa fråga
+                return None
         if not self._forum:
             return None
         key = f"topic:{chat_id}:{topic}"
@@ -772,8 +794,9 @@ class TelegramNotifier:
         try:
             created = http_post_json(f"{self.api}/createForumTopic", {"chat_id": chat_id, "name": topic[:128]}) or {}
             thread = int(created["result"]["message_thread_id"])
-        except (NotifyError, OSError, KeyError, TypeError, ValueError) as e:
+        except (NotifyError, OSError, KeyError, TypeError, ValueError, http.client.HTTPException) as e:
             if temporary_error(e):
+                self._temporary = True
                 return None  # försök igen med nästa fynd
             self._no_topic.add(topic)  # ämnen som redan finns fungerar fortfarande
             if not self._topic_warned:
@@ -2065,7 +2088,10 @@ class Bot:
             if isinstance(notifier, TelegramNotifier):
                 notifier.new_run()
                 if not self.dry_run:
-                    notifier.prepare_topics(self.topic_names())
+                    try:
+                        notifier.prepare_topics(self.topic_names())
+                    except Exception as e:  # ämnena får aldrig stoppa sökningarna
+                        log.warning("Telegram: kunde inte förbereda ämnena (%s) – fortsätter", type(e).__name__)
         try:
             self.flush_pending()
         except Exception:

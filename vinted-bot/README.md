@@ -321,7 +321,8 @@ Alla sökningar finns i `config.yaml`. Ett exempel:
 - **premium_keywords** höjer säljvärdet när ett ord finns i titeln. Negativa
   värden sänker det.
 - **exclude_keywords** hoppar över annonser vars titel innehåller ordet. Den
-  globala listan tar redan bort kopior och barnplagg ("kids", "junior" m.fl.).
+  globala listan tar redan bort kopior och barnplagg ("barn", "kids", "junior"
+  m.fl.). Fraser i **exclude_exceptions** ("barn coat", "kid mohair") räknas inte.
 - **womens_keywords** ("dam", "women" m.fl.) hoppar över damplagg, utom när
   titeln också innehåller ett ord från **unisex_keywords** ("herr/dam", "unisex").
 - **tags:** `[Jeans]` ger hashtaggen `#Jeans` i notisen. Märket blir alltid en hashtagg.
