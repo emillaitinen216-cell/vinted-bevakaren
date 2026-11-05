@@ -60,6 +60,13 @@ exclude_keywords:
   - boys
   - dziecięca
   - dziecięcy
+  - dziecięce
+  - chłopięca      # polska: pojk-
+  - chłopięcy
+  - chłopięce
+  - dziewczęca     # polska: flick-
+  - dziewczęcy
+  - dziewczęce
   - kinder
   - enfant
 
@@ -141,6 +148,17 @@ topics:
 daily_summary_hour: 20
 summary_topic: "⭐ Dagens bästa"
 
+# På söndagar skickas också en veckorapport i samma ämne (antal fynd, hur snabbt de
+# såldes, bästa märket). false = ingen veckorapport.
+weekly_report: true
+
+# Tyst natt: fynd mellan de här timmarna (svensk tid) kommer utan ljud. false = av.
+quiet_hours: [23, 7]
+
+# Kopierisk i varje fynd: boten öppnar annonsen och kollar säljarens omdömen, bilderna
+# och orden i annonsen. Redan sålda annonser skickas inte. false = av.
+deal_risk: true
+
 # --------------------------------------------------------------------------
 # Sökningar
 #
@@ -160,6 +178,7 @@ summary_topic: "⭐ Dagens bästa"
 #   tags          hashtaggar i notisen, t.ex. [Jeans] → #Jeans (märket blir alltid en hashtagg).
 #                 Tryck på en hashtagg i Telegram för att se alla notiser med den.
 #   enabled       false = pausa sökningen
+#   hot           true = toppmärke som söks två gånger per varv (de bästa fynden säljs på minuter)
 # --------------------------------------------------------------------------
 
 searches:
@@ -306,6 +325,7 @@ searches:
   # ---------------- Dunjackor (Dunjackor 2536 + Kappor 2051) ----------------
 
   - name: Moncler
+    hot: true             # toppmärke: söks två gånger per varv
     query: moncler
     catalog: [2536, 2051]
     tags: [Dunjacka]
@@ -319,6 +339,7 @@ searches:
       maya: 800
 
   - name: Canada Goose
+    hot: true             # toppmärke: söks två gånger per varv
     query: canada goose
     catalog: [2536, 2051]
     tags: [Dunjacka]
@@ -410,6 +431,7 @@ searches:
   # (suspicious_below) är satt högt för märken som ofta kopieras.
 
   - name: Stone Island jackor
+    hot: true             # toppmärke: söks två gånger per varv
     query: stone island
     catalog: [2052]
     tags: [Jacka]
@@ -632,6 +654,39 @@ searches:
       santa fe: 200
       vintage: 100
 
+  # Abercrombie & Fitch och Hollister: billigare märken med väldigt många annonser, så
+  # vinstgränsen är satt så att bara de allra billigaste blir fynd (november 2026).
+  - name: Abercrombie & Fitch jackor
+    query: abercrombie
+    catalog: [2052]
+    tags: [Jacka]
+    max_price: 320
+    min_profit: 200
+    brands:
+      Abercrombie: 450      # "Abercrombie & Fitch"; median ~500 kr, undre kvartil ~250 kr
+      Abercrombie Kids: ignorera
+      Abercrombie & Fitch Kids: ignorera
+    premium_keywords:
+      parka: 100
+      puffer: 100
+      dunjacka: 100
+      puchowa: 100          # polska: dunjacka
+      sherpa: 50
+
+  - name: Hollister jackor
+    query: hollister
+    catalog: [2052]
+    tags: [Jacka]
+    max_price: 200
+    min_profit: 120
+    brands:
+      Hollister: 270        # median ~300 kr, undre kvartil ~180 kr
+    premium_keywords:
+      puffer: 60
+      dunjacka: 60
+      puchowa: 60
+      sherpa: 40
+
   # ---------------- Tröjor (79, inkl. huvtröjor och koftor), t-shirtar och skjortor ----------------
 
   - name: Moncler tröjor
@@ -738,6 +793,30 @@ searches:
       polo bear: 300
       hand knit: 150
       rrl: 300
+
+  - name: Abercrombie & Fitch tröjor
+    query: abercrombie
+    catalog: [79]
+    tags: [Tröja]
+    max_price: 250
+    min_profit: 220
+    brands:
+      Abercrombie: 350      # median ~390 kr, undre kvartil ~170 kr
+      Abercrombie Kids: ignorera
+      Abercrombie & Fitch Kids: ignorera
+    premium_keywords:
+      cashmere: 100
+      kashmir: 100
+      merino: 50
+
+  - name: Hollister tröjor
+    query: hollister
+    catalog: [79]
+    tags: [Tröja]
+    max_price: 190
+    min_profit: 175
+    brands:
+      Hollister: 270        # median ~300 kr, undre kvartil ~120 kr
 
   - name: Fear of God Essentials
     query: essentials

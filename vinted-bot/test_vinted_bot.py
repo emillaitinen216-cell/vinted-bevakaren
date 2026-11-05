@@ -1705,27 +1705,28 @@ class GroupFeatureTests(unittest.TestCase):
 
     def test_sold_deal_is_marked_in_the_group(self):
         self.api = FakeBotApi()
-        self.sent_ago(2 * 3600)
+        self.sent_ago(110 * 60)
         client = FakeListingClient(sold_page())
         self.assertEqual(self.sold_bot(client).check_sold(), 1)
         (edit,) = self.api.made("editMessageCaption")
         self.assertEqual((edit["chat_id"], edit["message_id"]), (self.GROUP, 9))
-        self.assertTrue(edit["caption"].startswith("❌ <b>SÅLD</b>\n<b>🔥 Moncler</b>"))
+        self.assertTrue(edit["caption"].startswith("❌ <b>SÅLD inom 2 tim</b>\n<b>🔥 Moncler</b>"), edit["caption"])
+        self.assertEqual(self.store.db.execute("SELECT sold_after FROM sent").fetchone()[0] // 60, 110)
         self.assertEqual(edit["reply_markup"]["inline_keyboard"], [[{"text": "Öppna på Vinted", "url": f"{BASE}/items/42"}]])
         self.assertEqual(self.store.due_sold_checks(10), [])   # kollas inte igen
         self.assertEqual(self.store.top_deals(0), [])
 
-    def test_unsold_deal_is_checked_after_1_6_and_24_hours(self):
+    def test_unsold_deal_is_checked_after_10_and_30_min_then_1_3_6_and_24_hours(self):
         self.api = FakeBotApi()
-        self.sent_ago(30 * 60)
+        self.sent_ago(5 * 60)
         client = FakeListingClient(listing_page())
         bot = self.sold_bot(client)
         self.assertEqual(bot.check_sold(), 0)
         self.assertEqual(client.calls, [])                    # för tidigt
-        for hours, expected_calls in ((1, 1), (2, 1), (6, 2), (24, 3), (48, 3)):
-            self.store.db.execute("UPDATE sent SET ts = ?", (int(vb.time.time()) - hours * 3600 - 1,))
+        for minutes, expected_calls in ((10, 1), (20, 1), (30, 2), (60, 3), (180, 4), (360, 5), (1440, 6), (2880, 6)):
+            self.store.db.execute("UPDATE sent SET ts = ?", (int(vb.time.time()) - minutes * 60 - 1,))
             bot.check_sold()
-            self.assertEqual(len(client.calls), expected_calls, hours)
+            self.assertEqual(len(client.calls), expected_calls, minutes)
         self.assertEqual(self.api.made("editMessageCaption"), [])
 
     def test_removed_listing_is_marked_removed(self):
@@ -1778,7 +1779,7 @@ class GroupFeatureTests(unittest.TestCase):
 
         with mock.patch.object(vb, "parse_listing", side_effect=parse), self.assertLogs("vinted-bot", "WARNING"):
             self.assertEqual(bot.check_sold(), 1)
-        self.assertEqual(client.calls, [111, 222])
+        self.assertEqual(client.calls, [222, 111])             # nyaste först
         self.assertEqual(self.api.made("editMessageCaption")[0]["message_id"], 2)
 
     def test_deals_are_recorded_for_sold_check(self):
@@ -1811,6 +1812,7 @@ class GroupFeatureTests(unittest.TestCase):
         self.store.record_sent(self.GROUP, 1, 5, "photo", "x", "u")
         self.store.sold_checked(5, "SÅLD")                    # sålda räknas inte
         evening = datetime(2026, 10, 22, 20, 5, tzinfo=vb.STOCKHOLM)
+        self.store.db.execute("UPDATE deals SET ts = ?", (int(evening.timestamp()) - 3600,))
         self.assertFalse(bot.daily_summary(evening.replace(hour=19)))
         self.assertTrue(bot.daily_summary(evening))
         self.assertFalse(bot.daily_summary(evening.replace(hour=23)))
@@ -1860,6 +1862,343 @@ class GroupFeatureTests(unittest.TestCase):
         self.assertEqual(verdict("Carhartt jackor", "Carhartt Barn Coat brun", "Carhartt", 100), "fynd")
         self.assertNotEqual(verdict("Carhartt jackor", "Carhartt barn coat barn 140", "Carhartt", 100), "fynd")
         self.assertEqual(verdict("Acne Studios tröjor", "Acne Studios kid mohair cardigan", "Acne Studios", 200), "fynd")
+
+
+class InspectingClient(FakeClient):
+    """Katalog + annonssida, som VintedClient."""
+    base = BASE
+
+    def __init__(self, page=None, error=None):
+        super().__init__()
+        self.page, self.error, self.listing_calls = page, error, []
+
+    def fetch_listing_page(self, item_id):
+        self.listing_calls.append(item_id)
+        if self.error:
+            raise self.error
+        return self.page
+
+
+class MembersTelegram(LegitTelegram):
+    """Låtsas-Telegram som också svarar på getChatMember."""
+
+    def __init__(self, members=(), **kw):
+        super().__init__(**kw)
+        self.members = set(members)
+
+    def __call__(self, token, method, params=None, timeout=35):
+        if method == "getChatMember":
+            self.calls.append((token, method, params))
+            return {"status": "member" if params["user_id"] in self.members else "left"}
+        if method == "setMyCommands":
+            return True
+        return super().__call__(token, method, params, timeout)
+
+
+class MoreGroupFeatureTests(unittest.TestCase):
+    """Kopierisk i fynden, toppmärken, tyst natt, veckorapport och egna bevakningar."""
+    GROUP = "-1001"
+
+    def setUp(self):
+        self.cfg = make_cfg()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "bot.db"
+        self.store = vb.Store(self.db)
+        self.addCleanup(self.store.db.close)
+
+    def first_run_then(self, bot, client, search, new_items):
+        client.pages = {1: [item(id=1)]}
+        bot.run_search(search)                       # första körningen är tyst
+        client.pages = {1: new_items + [item(id=1)]}
+        return bot.run_search(search)
+
+    # --- kopierisk ---
+
+    def test_risk_line(self):
+        good = vb.parse_listing(listing_page(reviews=80, rating=0.98, photos=12), BASE, 42)
+        self.assertEqual(vb.risk_line(good), "🟢 Säljare & annons: låg risk – 80 omdömen (4,9/5), 12 bilder")
+        bad = vb.parse_listing(listing_page(reviews=0, photos=1, description="1:1 replica"), BASE, 42)
+        line = vb.risk_line(bad)
+        self.assertTrue(line.startswith("🔴 Säljare & annons: hög risk – inga omdömen, 1 bild, annonsen innehåller"), line)
+
+    def test_deal_shows_risk_and_sold_listings_are_skipped(self):
+        notifier, search = FakeNotifier(), make_search(self.cfg)
+        client = InspectingClient(listing_page(item_id=2, reviews=30, rating=0.95, photos=9))
+        bot = vb.Bot(self.cfg, [search], client, self.store, [notifier])
+        self.assertEqual(self.first_run_then(bot, client, search, [item(id=2)]), 1)
+        self.assertIn("🟢 Säljare & annons: låg risk – 30 omdömen (4,8/5), 9 bilder", notifier.sent[0].lines)
+        client.page = sold_page(3)
+        client.pages = {1: [item(id=3), item(id=2), item(id=1)]}
+        self.assertEqual(bot.run_search(search), 0)            # redan såld – skickas inte
+        client.page = None
+        client.pages = {1: [item(id=4), item(id=3), item(id=2), item(id=1)]}
+        self.assertEqual(bot.run_search(search), 0)            # borttagen
+        self.assertEqual(client.listing_calls, [2, 3, 4])
+
+    def test_vinted_trouble_still_sends_the_deal(self):
+        notifier, search = FakeNotifier(), make_search(self.cfg)
+        client = InspectingClient(error=vb.Blocked("HTTP 429"))
+        bot = vb.Bot(self.cfg, [search], client, self.store, [notifier])
+        self.assertEqual(self.first_run_then(bot, client, search, [item(id=2), item(id=3)]), 2)
+        self.assertFalse(any("Säljare & annons" in line for line in notifier.sent[0].lines))
+        self.assertEqual(client.listing_calls, [2])             # spärrad: inga fler annonssidor det varvet
+
+    def test_risk_can_be_turned_off(self):
+        search = make_search(self.cfg)
+        client = InspectingClient(listing_page())
+        bot = vb.Bot(make_cfg(deal_risk=False), [search], client, self.store, [FakeNotifier()])
+        self.first_run_then(bot, client, search, [item(id=2)])
+        self.assertEqual(client.listing_calls, [])
+
+    # --- toppmärken ---
+
+    def test_hot_searches_run_twice_without_breaking_the_rotation(self):
+        searches = [make_search(self.cfg, name=n, hot=(n in ("A", "D"))) for n in ("A", "B", "C", "D")]
+        client = NamedClient()
+        bot = vb.Bot(self.cfg, searches, client, self.store, [], time_budget=1000)
+        bot.run_cycle()
+        # Den extra sökningen kommer ett halvt varv från den vanliga – före om den vanliga ligger sent.
+        self.assertEqual(client.searched, ["A", "D", "B", "A", "C", "D"])
+        self.assertEqual(self.store.get_setting("next_search"), "0")
+        shipped = [s.name for s in vb.load_config(Path(vb.HERE / "config.yaml"))[1] if s.hot]
+        self.assertEqual(shipped, ["Moncler", "Canada Goose", "Stone Island jackor"])
+
+    # --- tyst natt ---
+
+    def test_quiet_hours(self):
+        at = lambda h: datetime(2026, 11, 5, h, 30, tzinfo=vb.STOCKHOLM)
+        self.assertEqual([vb.in_quiet_hours(self.cfg, at(h)) for h in (22, 23, 2, 6, 7, 12)],
+                         [False, True, True, True, False, False])
+        self.assertFalse(vb.in_quiet_hours(make_cfg(quiet_hours=False), at(2)))
+        self.assertFalse(vb.in_quiet_hours(make_cfg(quiet_hours=True), at(2)))      # konstigt värde: aldrig tyst
+        with tempfile.TemporaryDirectory() as d:
+            bad = Path(d) / "c.yaml"
+            bad.write_text(Path(vb.HERE / "config.yaml").read_text(encoding="utf-8").replace(
+                "quiet_hours: [23, 7]", "quiet_hours: true"), encoding="utf-8")
+            with self.assertRaises(vb.ConfigError):
+                vb.load_config(bad)
+        sent = []
+        with mock.patch.object(vb, "http_post_json", side_effect=lambda url, payload, timeout=20: sent.append(payload) or {}):
+            vb.TelegramNotifier(TOKEN, "555", quiet=lambda: True).send(vb.Message("x", ["y"], f"{BASE}/items/1"))
+            vb.TelegramNotifier(TOKEN, "555", quiet=lambda: False).send(vb.Message("x", ["y"], f"{BASE}/items/1"))
+        self.assertEqual([p.get("disable_notification") for p in sent], [True, None])
+
+    # --- såld-tid och veckorapport ---
+
+    def test_within(self):
+        self.assertEqual([vb.within(x) for x in (30, 14 * 60, 56 * 60, 89 * 60, 121 * 60, 23.5 * 3600, 35 * 3600)],
+                         ["inom 5 min", "inom 15 min", "inom 1 tim", "inom 2 tim", "inom 3 tim", "inom 1 dygn",
+                          "inom 2 dygn"])
+
+    def test_upgrade_keeps_the_sold_checks_already_made(self):
+        old = Path(self.tmp.name) / "older.db"
+        db = sqlite3.connect(old)
+        db.execute("CREATE TABLE sent (chat_id TEXT, message_id INTEGER, item_id INTEGER, kind TEXT, html TEXT, "
+                   "url TEXT, ts INTEGER, checks INTEGER NOT NULL DEFAULT 0, status TEXT, PRIMARY KEY (chat_id, message_id))")
+        now = int(vb.time.time())
+        for message_id, checks, age in ((1, 3, 5 * 86400), (2, 1, 2 * 3600), (3, 0, 20 * 60)):
+            db.execute("INSERT INTO sent VALUES (?, ?, ?, 'photo', 'x', 'u', ?, ?, NULL)",
+                       (self.GROUP, message_id, 100 + message_id, now - age, checks))
+        db.commit()
+        db.close()
+        store = vb.Store(old)
+        self.addCleanup(store.db.close)
+        self.assertEqual([r[1] for r in store.due_sold_checks(10)], [3])   # inte de gamla, färdigkollade
+        self.assertEqual([r[0] for r in store.db.execute("SELECT checks FROM sent ORDER BY message_id")], [6, 3, 0])
+
+    def test_old_database_gets_sold_after_column(self):
+        old = Path(self.tmp.name) / "old.db"
+        db = sqlite3.connect(old)
+        db.execute("CREATE TABLE sent (chat_id TEXT, message_id INTEGER, item_id INTEGER, kind TEXT, html TEXT, "
+                   "url TEXT, ts INTEGER, checks INTEGER NOT NULL DEFAULT 0, status TEXT, PRIMARY KEY (chat_id, message_id))")
+        db.commit()
+        db.close()
+        store = vb.Store(old)
+        self.addCleanup(store.db.close)
+        store.record_sent(self.GROUP, 1, 42, "photo", "x", "u")
+        store.sold_checked(42, "SÅLD")
+        self.assertIsNotNone(store.db.execute("SELECT sold_after FROM sent").fetchone()[0])
+
+    def log_deal(self, item_id, profit, brand="Moncler", ago=3600):
+        it = item(id=item_id, brand=brand, title=f"{brand} jacka", price=900, total=950, url=f"{BASE}/items/{item_id}")
+        self.store.log_deal(vb.Deal(it, "Dunjackor", resale=900 + profit, cost=950, profit=profit, roi=50))
+        self.store.db.execute("UPDATE deals SET ts = ? WHERE item_id = ?", (self.sunday_ts - ago, item_id))
+
+    def test_weekly_report_on_sunday_evening_once(self):
+        sunday = datetime(2026, 11, 8, 20, 10, tzinfo=vb.STOCKHOLM)
+        self.sunday_ts = int(sunday.timestamp())
+        for item_id, profit, brand in ((1, 500, "Moncler"), (2, 900, "Moncler"), (3, 300, "Stone Island"),
+                                       (4, 100, "Moncler")):
+            self.log_deal(item_id, profit, brand)
+        self.log_deal(9, 5000, ago=8 * 86400)                   # förra veckan – räknas inte
+        for message_id, item_id, after in ((1, 1, 600), (2, 2, 7200), (3, 3, None)):
+            self.store.record_sent(self.GROUP, message_id, item_id, "photo", "x", "u")
+            if after:
+                self.store.db.execute("UPDATE sent SET status = 'SÅLD', sold_after = ? WHERE message_id = ?",
+                                      (after, message_id))
+        self.store.set_setting(f"claim:{self.GROUP}:1", json.dumps({"id": 7, "name": "Emil"}))
+        self.store.set_setting(f"claim:{self.GROUP}:2", json.dumps({"id": 7, "name": "Emil"}))
+        self.store.set_setting(f"claim:{self.GROUP}:3", json.dumps({"id": 8, "name": "Kalle"}))
+        notifier = FakeNotifier()
+        bot = vb.Bot(self.cfg, [], FakeClient(), self.store, [notifier])
+        self.assertFalse(bot.weekly_report(sunday.replace(hour=19)))
+        self.assertFalse(bot.weekly_report(sunday - vb.timedelta(days=1)))   # lördag
+        self.assertTrue(bot.weekly_report(sunday))
+        self.assertFalse(bot.weekly_report(sunday.replace(hour=22)))
+        (msg,) = notifier.sent
+        self.assertEqual(msg.title, "📊 Veckans fynd")
+        self.assertEqual(msg.topic, "⭐ Dagens bästa")
+        self.assertEqual(msg.lines, [
+            "🔥 4 fynd den här veckan",
+            "❌ 2 av 3 såldes – hälften av dem inom 10 min",
+            "🏆 Flest fynd: Moncler (3 st, ≈ +1 500 kr sammanlagt)",
+            "💎 Största fyndet: Moncler – 900 kr (≈ +900 kr) · Moncler jacka",
+            "🙋 Flest tagna fynd: Emil (2 st)",
+        ])
+        self.assertEqual(msg.buttons, [[{"text": "💎 Moncler – 900 kr", "url": f"{BASE}/items/2"}]])
+
+    # --- egna bevakningar ---
+
+    def test_parse_watch(self):
+        self.assertEqual(vb.parse_watch("Moncler"), ("Moncler", []))
+        self.assertEqual(vb.parse_watch("Stone Island L"), ("Stone Island", ["l"]))
+        self.assertEqual(vb.parse_watch("Moncler M/L"), ("Moncler", ["m", "l"]))
+        self.assertEqual(vb.parse_watch("Acne jeans storlek W32"), ("Acne jeans", ["w32"]))
+        self.assertEqual(vb.parse_watch("Levis W32L32"), ("Levis", ["w32"]))
+        self.assertEqual(vb.parse_watch("Levis W32/L32"), ("Levis", ["w32"]))
+        self.assertEqual(vb.parse_watch("Moncler 3XL"), ("Moncler", ["xxxl"]))
+        self.assertIsNone(vb.parse_watch("Levis L32"))
+        self.assertEqual(vb.parse_watch("Ralph Lauren"), ("Ralph Lauren", []))
+        self.assertIsNone(vb.parse_watch("L"))
+        self.assertIsNone(vb.parse_watch(""))
+
+    def test_watch_matches(self):
+        it = item(brand="Moncler", title="Moncler Maya dunjacka", size="L / 52")
+        self.assertTrue(vb.watch_matches("moncler", [], it))
+        self.assertTrue(vb.watch_matches("Moncler dunjacka", ["l"], it))
+        self.assertFalse(vb.watch_matches("Moncler", ["m"], it))
+        self.assertFalse(vb.watch_matches("Stone Island", [], it))
+        self.assertTrue(vb.watch_matches("Nudie", ["32"], item(size="W32 | L32")))
+        self.assertFalse(vb.watch_matches("Nudie", ["34"], item(size="W32 | L34")))
+
+    def listener(self, members=(7,), dm_blocked=()):
+        self.api = MembersTelegram(members=members)
+        self.sent = []
+
+        def post(url, payload, timeout=20):
+            self.sent.append((url.rsplit("/", 1)[1], payload))
+            if str(payload.get("chat_id")) in {str(u) for u in dm_blocked}:
+                raise vb.NotifyError(403, json.dumps({"description": "Forbidden: bot can't initiate conversation with a user"}))
+            return {"ok": True, "result": {"message_id": 1}}
+
+        patcher = mock.patch.object(vb, "http_post_json", side_effect=post)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        listener = vb.LegitListener(TOKEN, self.db, self.cfg, [], LEGIT_TIPS, fixed_chat=self.GROUP,
+                                    api=self.api, client=FakeListingClient())
+        listener.username = "fyndbot"
+        return listener
+
+    def say(self, listener, update_id, chat, text, user=7, chat_type="supergroup"):
+        msg = tg_msg(update_id, chat, text, user, 100, chat_type=chat_type)
+        msg["message"]["from"]["first_name"] = "Emil"
+        self.api.updates = [[msg]]
+        listener.last_command.clear()  # spamspärren testas för sig
+        listener.poll(self.store)
+
+    def test_bevaka_in_group_saves_and_confirms_privately(self):
+        listener = self.listener()
+        self.say(listener, 1, int(self.GROUP), "/bevaka Moncler L")
+        self.assertEqual(self.store.watches(7), [(1, 7, "Moncler", ["l"])])
+        (dm_method, dm), (_, group_reply) = self.sent
+        self.assertEqual((dm["chat_id"], dm_method), ("7", "sendMessage"))
+        self.assertIn("Moncler (L): du får fynden här", dm["text"])
+        self.assertIn("Klart, Emil! Du får Moncler (L) privat.", group_reply["text"])
+
+    def test_bevaka_needs_the_bot_started_first(self):
+        listener = self.listener(dm_blocked=(7,))
+        self.say(listener, 1, int(self.GROUP), "/bevaka Moncler")
+        self.assertEqual(self.store.watches(7), [])
+        _, group_reply = self.sent[-1]
+        self.assertIn("Tryck Starta hos @fyndbot först", group_reply["text"])
+        self.assertEqual(group_reply["reply_markup"]["inline_keyboard"][0][0]["url"], "https://t.me/fyndbot?start=bevaka")
+
+    def test_members_can_use_their_private_chat_but_strangers_cannot(self):
+        listener = self.listener(members=(7,))
+        self.say(listener, 1, 7, "/bevaka Stone Island M/L", user=7, chat_type="private")
+        self.assertEqual(self.store.watches(7), [(1, 7, "Stone Island", ["m", "l"])])
+        self.say(listener, 2, 99, "/bevaka Moncler", user=99, chat_type="private")
+        self.say(listener, 3, 99, "/legit 42424242", user=99, chat_type="private")
+        self.assertEqual(self.store.watches(99), [])
+        self.assertEqual([p["chat_id"] for _, p in self.sent], ["7"])          # bara svaret till medlemmen
+        self.say(listener, 4, 7, "/start", user=7, chat_type="private")
+        self.assertIn("/bevaka Moncler – alla Moncler-fynd", self.sent[-1][1]["text"])
+
+    def test_list_and_remove_watches(self):
+        listener = self.listener()
+        for n, text in enumerate(("/bevaka Moncler", "/bevaka Stone Island L", "/bevaka dunjacka"), 1):
+            self.say(listener, n, 7, text, chat_type="private")
+        self.say(listener, 10, 7, "/bevakningar", chat_type="private")
+        self.assertIn("1. Moncler\n2. Stone Island (L)\n3. dunjacka", self.sent[-1][1]["text"])
+        self.say(listener, 11, 7, "/sluta 2", chat_type="private")
+        self.assertEqual([w[2] for w in self.store.watches(7)], ["Moncler", "dunjacka"])
+        self.say(listener, 12, 7, "/sluta alla", chat_type="private")
+        self.assertEqual(self.store.watches(7), [])
+
+    def test_watch_commands_have_a_spam_guard_and_paused_watches_restart(self):
+        listener = self.listener()
+        self.store.add_watch(7, "Moncler", [])
+        self.store.pause_watches(7)
+        msg = tg_msg(1, int(self.GROUP), "/bevakningar", 7, 100, chat_type="supergroup")
+        self.api.updates = [[msg, dict(tg_msg(2, int(self.GROUP), "/bevakningar", 7, 100, chat_type="supergroup"))]]
+        listener.poll(self.store)
+        self.assertEqual(len(self.sent), 1)                     # andra kommandot inom 3 s ignoreras
+        self.assertIn("⏸ Pausade", self.sent[0][1]["text"])
+        self.say(listener, 3, 7, "/bevakningar", chat_type="private")
+        self.assertEqual([w[1] for w in self.store.watches()], [7])     # igång igen
+        self.assertNotIn("⏸ Pausade", self.sent[-1][1]["text"])
+
+    def test_former_members_can_still_remove_their_watches_privately(self):
+        listener = self.listener(members=())
+        self.store.add_watch(7, "Moncler", [])
+        self.say(listener, 1, 7, "/bevaka Stone Island", chat_type="private")
+        self.say(listener, 2, 7, "/sluta alla", chat_type="private")
+        self.assertEqual(self.store.watches(7), [])
+        self.assertEqual(len(self.sent), 1)                     # bara svaret på /sluta
+
+    def test_start_button_does_not_move_the_deals(self):
+        self.assertEqual(vb.telegram_events([tg_msg(1, 7, "/start bevaka", 7, 100)]), [])
+        self.assertEqual(len(vb.telegram_events([tg_msg(1, 7, "/start", 7, 100)])), 1)
+
+    def test_matching_deal_is_sent_privately_and_blocked_users_are_paused(self):
+        self.store.add_watch(7, "Nudie", [])
+        self.store.add_watch(8, "Nudie", ["w30"])
+        self.store.add_watch(9, "Moncler", [])
+        self.store.add_watch(10, "Nudie", [])                   # har lämnat gruppen
+        sent = []
+
+        def post(url, payload, timeout=20):
+            if url.endswith("/getChatMember"):
+                return {"ok": True, "result": {"status": "left" if payload["user_id"] == 10 else "member"}}
+            sent.append(payload)
+            if payload.get("chat_id") == "8":
+                raise vb.NotifyError(403, json.dumps({"description": "Forbidden: bot was blocked by the user"}))
+            return {"ok": True, "result": {"message_id": len(sent), "chat": {"id": int(payload["chat_id"])}}}
+
+        with mock.patch.object(vb, "http_post_json", side_effect=post):
+            tg = vb.TelegramNotifier(TOKEN, self.GROUP, legit_button=True, store=self.store)
+            bot = vb.Bot(self.cfg, [], FakeClient(), self.store, [tg])
+            deal = vb.Deal(item(id=5, size="46 | W30"), "Test", resale=400, cost=200, profit=200, roi=1.0)
+            with self.assertLogs("vinted-bot", "WARNING"):
+                bot.notify(deal)
+        chats = [p["chat_id"] for p in sent if "photo" in p or "text" in p]
+        self.assertEqual(chats, [self.GROUP, "7", "8"])
+        self.assertIn("🔔 Din bevakning: Nudie", sent[1].get("caption") or sent[1].get("text"))
+        dm_buttons = [b.get("callback_data") for row in sent[1]["reply_markup"]["inline_keyboard"] for b in row]
+        self.assertNotIn("claim:5", dm_buttons)                 # "Jag tar den" bara i gruppen
+        self.assertEqual([w[1] for w in self.store.watches()], [7, 9])   # 8 har stoppat boten, 10 har lämnat
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM sent WHERE item_id = 5").fetchone()[0], 2)
 
 
 if __name__ == "__main__":

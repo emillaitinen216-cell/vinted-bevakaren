@@ -14,10 +14,10 @@ Färdiga sökningar finns för:
   The North Face, Patagonia, Peak Performance och Moose Knuckles
 - **Jackor och rockar:** Stone Island, C.P. Company, Burberry, Prada,
   Arc'teryx, Herno, Ralph Lauren, Woolrich, Napapijri, Sail Racing, Haglöfs,
-  Norrøna, Mammut, Patagonia och Carhartt
+  Norrøna, Mammut, Patagonia, Carhartt, Abercrombie & Fitch och Hollister
 - **Tröjor, hoodies och skjortor:** Moncler, Supreme, Acne Studios,
   C.P. Company, Ami Paris, Stone Island, Burberry, Ralph Lauren,
-  Fear of God Essentials och Our Legacy
+  Fear of God Essentials, Our Legacy, Abercrombie & Fitch och Hollister
 - **Byxor, shorts och fler jeans:** C.P. Company, Stone Island, Jacob Cohën,
   A.P.C. och Acne Studios
 
@@ -38,6 +38,7 @@ notis ut:
    💰 120 kr · 134 kr inkl. köparskydd + ~49 kr frakt
    📈 Säljvärde ≈ 480 kr → vinst ≈ 298 kr (163%)
    📏 48 | W32 · Mycket bra
+   🟢 Säljare & annons: låg risk – 42 omdömen (4,9/5), 9 bilder
    ✨ selvage (+100)
    🔎 Nudie Jeans
    🏷 #Nudie #Jeans
@@ -228,7 +229,7 @@ checklistor står i `legit_tips.yaml` och går att ändra.
 
 **Boten kan inte se på bilderna om ett plagg är äkta.** Det är en
 riskbedömning, inte en garanti. Erbjuder Vinted äkthetskontroll för annonsen
-står det i svaret. Bara fynd-chatten och din privata chatt får svar.
+står det i svaret. Bara fynd-chatten och privata chattar med medlemmar i gruppen får svar.
 
 - **Är boten inte admin i gruppen** får den bara kommandon som riktas till
   den. Skriv då `/legit@dinbot` (bottens användarnamn), eller gör boten till
@@ -261,13 +262,44 @@ först får sitt namn på knappen (*"🙋 Emil tar den"*), så att inte två kö
 samma plagg. Trycker samma person igen släpps fyndet. Trycker någon annan får
 den veta vem som redan tagit det.
 
-**❌ SÅLD.** Boten kollar varje fynd igen efter ungefär 1, 6 och 24 timmar. Är
-plagget sålt ändras inlägget till *❌ SÅLD* (eller *❌ BORTTAGEN* om annonsen
-är borta), så att ni slipper klicka på fynd som redan är borta.
+**❌ SÅLD inom 15 min.** Boten kollar varje fynd igen efter ungefär 10 och 30
+minuter, och sedan efter 1, 3, 6 och 24 timmar. Är plagget sålt ändras inlägget
+till *❌ SÅLD inom …* (eller *❌ BORTTAGEN* om annonsen är borta), så att ni
+slipper klicka på fynd som redan är borta och ser hur snabbt fynden går.
 
-**⭐ Dagens bästa.** Efter kl. 20 (svensk tid) skickar boten en gång om dagen
-dygnets fem fynd med störst vinst som inte hunnit säljas, i ett eget ämne.
-Tiden ändras med `daily_summary_hour` i `config.yaml` (`false` stänger av).
+**🟢🟡🔴 Kopierisk i fynden.** Boten öppnar varje fynd och visar säljarens
+omdömen, antalet bilder och varningsord i annonsen direkt i inlägget. Priset
+räknas inte in där – att det är lågt vet man redan, och märken som ofta
+kopieras har en egen varning. Redan sålda annonser skickas inte alls. Tryck på
+*🔍 Legitcheck* för hela bedömningen. Stängs av med `deal_risk: false`.
+
+**🔔 Egna bevakningar.** Alla i gruppen kan få fynd i ett visst märke privat:
+
+- `/bevaka Moncler` – alla Moncler-fynd
+- `/bevaka Stone Island L` – bara storlek L (flera storlekar: `M/L`)
+- `/bevaka dunjacka` – ord i titeln går också
+- `/bevakningar` visar dina bevakningar, `/sluta 2` tar bort nummer 2 och
+  `/sluta alla` tar bort alla.
+
+Boten får bara skriva till den som tryckt *Starta* hos den, så det behöver man
+göra en gång. Glömmer man det säger boten till, med en knapp att trycka på.
+Kommandona fungerar både i gruppen och i den privata chatten med boten, men
+bara för medlemmar i gruppen. Varje person kan ha 10 bevakningar.
+
+**⚡ Toppmärken söks oftare.** Sökningar med `hot: true` (Moncler, Canada Goose
+och Stone Island jackor) körs två gånger per varv, eftersom de bästa fynden
+säljs på minuter.
+
+**🌙 Tyst natt.** Fynd mellan kl. 23 och 07 kommer utan ljud. Tiderna ändras
+med `quiet_hours` i `config.yaml` (`false` stänger av).
+
+**⭐ Dagens bästa och 📊 veckorapport.** Efter kl. 20 (svensk tid) skickar boten
+en gång om dagen dygnets fem fynd med störst vinst som inte hunnit säljas, i ett
+eget ämne. På söndagar kommer också veckans siffror: antal fynd, hur många som
+såldes och hur snabbt, märket med flest fynd, veckans största fynd och vem som
+tagit flest fynd med *🙋 Jag tar den*. Tiden ändras med `daily_summary_hour`
+(`false` stänger av dagens bästa), och `weekly_report: false` stänger av
+veckorapporten.
 
 ### ntfy (enklast, inget konto)
 
@@ -339,6 +371,9 @@ Globala inställningar högst upp i filen:
 | `condition_multipliers` | | Skickfaktorer, t.ex. Bra = 0,85 och Ny med prislapp = 1,25 |
 | `topics` | 5 ämnen | Ämne i Telegram-gruppen per tagg, se [Ämnen](#ämnen-jag-tar-den-sålda-fynd-och-dagens-bästa) |
 | `daily_summary_hour` | 20 | När dagens fem bästa fynd skickas (svensk tid). `false` = av |
+| `weekly_report` | true | Veckorapport på söndagar |
+| `quiet_hours` | [23, 7] | Fynd utan ljud mellan de här timmarna. `false` = av |
+| `deal_risk` | true | Kopierisken i varje fynd (ett anrop till hos Vinted per fynd) |
 
 ### Kalibrera säljvärdena
 
