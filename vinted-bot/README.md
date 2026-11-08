@@ -5,21 +5,20 @@ märkesplagg dyker upp så billigt att det går att sälja vidare med vinst.
 
 Färdiga sökningar finns för:
 
-- **Herrjeans:** Nudie Jeans, Replay, Dondup och Diesel, plus en bootcut-sökning
-  (Levi's 517, Diesel Zatiny, True Religion, Evisu …)
+- **Herrjeans:** Nudie Jeans, Replay, Dondup, Diesel, Jacob Cohën, A.P.C., Acne Studios
+  och Tramarossa, plus en bootcut-sökning (Levi's 517, Diesel Zatiny, True Religion,
+  Evisu, Lee …)
 - **Fältjackor:** hela kategorin *Militär- och bruksjackor* (Stone Island,
-  C.P. Company, Barbour, Ralph Lauren, Carhartt, Alpha Industries …), Barbour
-  och "field jacket"/M65
+  C.P. Company, Ralph Lauren, Acne Studios, Barbour, Fjällräven), Barbour och
+  "field jacket"/M65
 - **Dunjackor:** Moncler, Canada Goose, Arc'teryx, Parajumpers, Fjällräven,
-  The North Face, Patagonia, Peak Performance och Moose Knuckles
-- **Jackor och rockar:** Stone Island, C.P. Company, Burberry, Prada,
-  Arc'teryx, Herno, Ralph Lauren, Woolrich, Napapijri, Sail Racing, Haglöfs,
-  Norrøna, Mammut, Patagonia, Carhartt, Abercrombie & Fitch och Hollister
-- **Tröjor, hoodies och skjortor:** Moncler, Supreme, Acne Studios,
-  C.P. Company, Ami Paris, Stone Island, Burberry, Ralph Lauren,
-  Fear of God Essentials, Our Legacy, Abercrombie & Fitch och Hollister
-- **Byxor, shorts och fler jeans:** C.P. Company, Stone Island, Jacob Cohën,
-  A.P.C. och Acne Studios
+  Patagonia, J.Lindeberg, Mackage och Moose Knuckles
+- **Jackor och rockar:** Stone Island, C.P. Company, Burberry, Prada, Arc'teryx,
+  Herno, Ralph Lauren, Woolrich, Haglöfs, Patagonia, Carhartt, J.Lindeberg,
+  Abercrombie & Fitch och Hollister
+- **Tröjor, hoodies och skjortor:** Moncler, Acne Studios, C.P. Company, Ami Paris,
+  Stone Island, Burberry, Ralph Lauren, J.Lindeberg, Gucci, Balenciaga,
+  Abercrombie & Fitch och Hollister
 
 För varje annons räknar boten ut en ungefärlig vinst:
 
@@ -49,7 +48,7 @@ Varje notis får också hashtaggar för märke och kategori, till exempel
 Telegram ser du alla notiser med samma tagg, så att du kan bläddra märke för
 märke. Kategorierna ställs in med `tags` i `config.yaml`.
 
-Märken som ofta kopieras (Moncler, Canada Goose, Stone Island, TNF …) får
+Märken som ofta kopieras (Moncler, Canada Goose, Stone Island, Gucci …) får
 **⚠️ Misstänkt lågt pris** när priset är under `suspicious_below`. Kontrollera
 äktheten innan du köper. Tryck på **🔍 Legitcheck** under ett fynd för att få
 en riskbedömning och en checklista för märket (se
@@ -246,7 +245,7 @@ står det i svaret. Bara fynd-chatten och privata chattar med medlemmar i gruppe
 #### Ämnen, "Jag tar den", sålda fynd och dagens bästa
 
 **Ämnen (en flik per kategori).** Fynden kan sorteras i ämnen som
-*Dunjackor*, *Jackor*, *Jeans*, *Tröjor & skjortor* och *Byxor & shorts*:
+*Dunjackor*, *Jackor*, *Jeans* och *Tröjor & skjortor*:
 
 1. Tryck på gruppens namn, sedan pennan (*Redigera*), och slå på **Ämnen**.
 2. Gör boten till administratör med rätten **Hantera ämnen** (*Administratörer*

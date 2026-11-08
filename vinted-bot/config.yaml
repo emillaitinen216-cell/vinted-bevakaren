@@ -141,7 +141,6 @@ topics:
   Jackor: [Jacka, Fältjacka]
   Jeans: [Jeans, Bootcut]
   Tröjor & skjortor: [Tröja, Skjorta, Hoodie]
-  Byxor & shorts: [Byxor, Shorts, Mjukisbyxor]
 
 # "Dagens 5 bästa fynd" (som inte hunnit säljas) skickas en gång om dagen efter den
 # här timmen, svensk tid, i ett eget ämne. false = ingen sammanfattning.
@@ -273,18 +272,11 @@ searches:
     brands:
       Stone Island:        {resale: 2000, max_price: 1100, suspicious_below: 500}
       "C.P. Company":      {resale: 1600, max_price: 900,  suspicious_below: 400}
-      Belstaff:            {resale: 1300, max_price: 700}
-      Filson:              {resale: 1300, max_price: 700}
-      Engineered Garments: {resale: 1300, max_price: 700}
       Ralph Lauren:        {resale: 1000, max_price: 550}
       Lauren Ralph Lauren: ignorera   # billigare sidolinjer
       Chaps: ignorera
-      Our Legacy:          {resale: 1000, max_price: 550}
       Acne Studios:        {resale: 1000, max_price: 550}
       Barbour:             {resale: 900,  max_price: 550}
-      Carhartt:            {resale: 800,  max_price: 450}
-      Schott:              {resale: 800,  max_price: 450}
-      Alpha Industries:    {resale: 650,  max_price: 350}
       Fjällräven:          {resale: 550,  max_price: 250}
 
   # Barbour i alla herrjackor och -kappor (1206) – vaxjackor ligger ofta under "Quiltade" eller "Kappor".
@@ -313,9 +305,6 @@ searches:
       Ralph Lauren: 1000    # median ~1 200 kr
       Lauren Ralph Lauren: ignorera
       Chaps: ignorera
-      Carhartt: 800
-      Schott: 800
-      Alpha Industries: 650
       Stone Island: {resale: 2000, max_price: 1100, suspicious_below: 500}
       "C.P. Company": {resale: 1600, max_price: 900,  suspicious_below: 400}
     premium_keywords:
@@ -390,21 +379,6 @@ searches:
     premium_keywords:
       expedition: 300
 
-  - name: The North Face dun
-    query: north face
-    catalog: [2536]
-    tags: [Dunjacka]
-    min_price: 200
-    max_price: 700
-    min_profit: 810
-    suspicious_below: 350   # Nuptse-kopior är vanliga
-    brands:
-      North Face: 1000      # median ~1 150 kr, undre kvartil ~800 kr
-    premium_keywords:
-      himalayan: 400
-      mcmurdo: 150
-      nuptse: 100
-
   - name: Patagonia dun
     query: patagonia
     catalog: [2536]
@@ -416,14 +390,26 @@ searches:
     premium_keywords:
       fitz roy: 300
 
-  - name: Peak Performance dun
-    query: peak performance
+  # Nya high end-märken, mätta på vinted.se i november 2026 (nya annonser per dygn och prisnivå).
+  - name: J.Lindeberg dun
+    query: lindeberg
     catalog: [2536]
     tags: [Dunjacka]
-    max_price: 500
-    min_profit: 440
+    max_price: 700
+    min_profit: 350
     brands:
-      Peak Performance: 750 # median ~800 kr, undre kvartil ~470 kr
+      J.Lindeberg: 950      # median ~1 060 kr, undre kvartil ~500 kr; ~10 nya annonser per dygn
+
+  - name: Mackage
+    query: mackage
+    catalog: [1206]
+    tags: [Dunjacka]
+    min_price: 900          # kopior finns – be om bilder på etiketterna
+    max_price: 2600
+    min_profit: 1000
+    suspicious_below: 1500
+    brands:
+      Mackage: 3500         # median ~3 950 kr, undre kvartil ~2 500 kr
 
   # ---------------- Fler jackor (Jackor 2052 / Kappor & jackor 1206) ----------------
   #
@@ -558,31 +544,6 @@ searches:
       arctic parka: 300
       john rich: 200
 
-  - name: Napapijri
-    query: napapijri
-    catalog: [1206]
-    tags: [Jacka]
-    max_price: 480
-    min_profit: 340
-    suspicious_below: 170
-    brands:
-      Napapijri: 580        # median ~640 kr, undre kvartil ~380 kr
-    premium_keywords:
-      skidoo: 150
-      rainforest: 100
-
-  - name: Sail Racing
-    query: sail racing
-    catalog: [1206]
-    tags: [Jacka]
-    max_price: 520
-    min_profit: 330
-    brands:
-      Sail Racing: 630      # median ~700 kr, undre kvartil ~450 kr
-    premium_keywords:
-      bowman: 200
-      race edition: 300
-
   - name: Haglöfs
     query: haglöfs
     catalog: [1206]
@@ -597,35 +558,6 @@ searches:
       goretex: 200
       spitz: 300
       roc: 150
-
-  - name: Norrøna
-    query: norrøna
-    catalog: [1206]
-    tags: [Jacka]
-    max_price: 470
-    min_profit: 360
-    brands:
-      Norrøna: 570          # median ~630 kr, undre kvartil ~410 kr
-    premium_keywords:
-      lofoten: 300
-      trollveggen: 300
-      falketind: 200
-      gore-tex pro: 200
-
-  - name: Mammut
-    query: mammut
-    catalog: [1206]
-    tags: [Jacka]
-    max_price: 440
-    min_profit: 280
-    brands:
-      Mammut: 520           # median ~580 kr, undre kvartil ~390 kr
-    premium_keywords:
-      gore-tex: 150
-      gore tex: 150
-      goretex: 150
-      nordwand: 400
-      eiger: 200
 
   - name: Patagonia jackor
     query: patagonia
@@ -687,6 +619,15 @@ searches:
       puchowa: 60
       sherpa: 40
 
+  - name: J.Lindeberg jackor
+    query: lindeberg
+    catalog: [2052]
+    tags: [Jacka]
+    max_price: 450
+    min_profit: 420
+    brands:
+      J.Lindeberg: 680      # median ~750 kr, undre kvartil ~390 kr; ~40 nya annonser per dygn
+
   # ---------------- Tröjor (79, inkl. huvtröjor och koftor), t-shirtar och skjortor ----------------
 
   - name: Moncler tröjor
@@ -699,20 +640,6 @@ searches:
     suspicious_below: 500   # kolla filtmärket och QR/NFC-etiketten
     brands:
       Moncler: 1160         # median ~1 290 kr, undre kvartil ~750 kr
-
-  - name: Supreme
-    query: supreme
-    catalog: [79]
-    tags: [Tröja]
-    min_price: 200
-    max_price: 740
-    min_profit: 800
-    suspicious_below: 400   # box logo kopieras mycket – kolla nacketiketten och broderiet
-    brands:
-      Supreme: 890          # median ~980 kr, undre kvartil ~650 kr
-    premium_keywords:
-      box logo: 500
-      bogo: 500
 
   - name: Acne Studios tröjor
     query: acne studios
@@ -818,52 +745,40 @@ searches:
     brands:
       Hollister: 270        # median ~300 kr, undre kvartil ~120 kr
 
-  - name: Fear of God Essentials
-    query: essentials
-    catalog: [267, 1821]
-    tags: [Hoodie, Mjukisbyxor]
-    min_price: 120
-    max_price: 470
-    min_profit: 350
-    suspicious_below: 250   # kopior är vanliga – kolla tygets tjocklek och gummilogan
+  - name: J.Lindeberg tröjor
+    query: lindeberg
+    catalog: [79]
+    tags: [Tröja]
+    max_price: 170
+    min_profit: 110
     brands:
-      # Märket heter oftast bara "Essentials". exact: true gör att t.ex. "Nike Sport Essentials"
-      # eller "Amazon Essentials" inte räknas.
-      Essentials: {resale: 560, exact: true}   # median ~620 kr, undre kvartil ~410 kr
-      Fear of God Essentials: 560
-      Fear of God: 560
+      J.Lindeberg: 240      # median ~200 kr (golftröjor och pikéer), undre kvartil ~150 kr
 
-  - name: Our Legacy
-    query: our legacy
-    catalog: [536, 257]
-    tags: [Skjorta, Jeans]
-    max_price: 450
-    min_profit: 200
+  # Gucci och Balenciaga kopieras mycket: de billigaste annonserna är nästan alltid kopior,
+  # så min_price hoppar över dem och allt under suspicious_below får en varning.
+  - name: Gucci tröjor
+    query: gucci
+    catalog: [79]
+    tags: [Tröja]
+    min_price: 600
+    max_price: 1300
+    min_profit: 500
+    suspicious_below: 1000
     brands:
-      Our Legacy: 540       # median ~600 kr, undre kvartil ~410 kr
+      Gucci: 1700           # median ~1 900 kr, undre kvartil ~900 kr; ~8 nya annonser per dygn
 
-  # ---------------- Byxor, shorts och fler jeans ----------------
-
-  - name: C.P. Company byxor och shorts
-    query: cp company
-    catalog: [34, 80]
-    tags: [Byxor, Shorts]
-    max_price: 480
-    min_profit: 260
-    suspicious_below: 160
+  - name: Balenciaga tröjor
+    query: balenciaga
+    catalog: [79]
+    tags: [Tröja]
+    min_price: 500
+    max_price: 1500
+    min_profit: 600
+    suspicious_below: 1000
     brands:
-      "C.P. Company": 580   # median ~640 kr, undre kvartil ~360 kr
+      Balenciaga: 2050      # median ~2 280 kr, undre kvartil ~1 340 kr
 
-  - name: Stone Island byxor och shorts
-    query: stone island
-    catalog: [34, 80]
-    tags: [Byxor, Shorts]
-    min_price: 120
-    max_price: 450
-    min_profit: 190
-    suspicious_below: 230
-    brands:
-      Stone Island: 540     # median ~600 kr, undre kvartil ~390 kr
+  # ---------------- Fler jeans ----------------
 
   - name: Jacob Cohën
     query: jacob cohen
@@ -900,3 +815,12 @@ searches:
       "1981": 80
       blå konst: 100
       vintage: 50
+
+  - name: Tramarossa
+    query: tramarossa
+    catalog: [257]
+    tags: [Jeans]
+    max_price: 330
+    min_profit: 150
+    brands:
+      Tramarossa: 450       # median ~500 kr, undre kvartil ~300 kr
