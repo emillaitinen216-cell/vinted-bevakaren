@@ -1516,6 +1516,35 @@ class GroupFeatureTests(unittest.TestCase):
         self.assertEqual(len(api.made("getChat")), 2)            # en gång per varv
         self.assertEqual(api.made("sendPhoto") + api.made("sendMessage"), [])
 
+    def test_topics_no_longer_in_the_config_are_removed(self):
+        self.store.set_setting(f"topic:{self.GROUP}:Byxor & shorts", "77")
+        self.store.set_setting(f"topic:{self.GROUP}:Jeans", "78")
+        api = FakeBotApi()
+        tg = self.notifier(api)
+        tg.prepare_topics(["Jeans"])
+        self.assertEqual(api.made("deleteForumTopic"), [{"chat_id": self.GROUP, "message_thread_id": 77}])
+        self.assertEqual(self.store.get_setting(f"topic:{self.GROUP}:Byxor & shorts"), "")
+        tg.new_run()
+        tg.prepare_topics(["Jeans"])
+        self.assertEqual(len(api.made("deleteForumTopic")), 1)    # bara en gång
+
+    def test_old_topic_is_closed_when_the_bot_may_not_delete_it(self):
+        self.store.set_setting(f"topic:{self.GROUP}:Byxor & shorts", "77")
+        api = FakeBotApi()
+        real_call = api.__call__
+
+        def no_delete_right(url, payload, timeout=20):
+            if url.endswith("/deleteForumTopic"):
+                api.calls.append(("deleteForumTopic", payload))
+                raise vb.NotifyError(400, json.dumps({"description": "Bad Request: not enough rights to delete the topic"}))
+            return real_call(url, payload, timeout)
+
+        with self.assertLogs("vinted-bot", "WARNING") as logs:
+            self.notifier(no_delete_right).prepare_topics([])
+        self.assertEqual(len(api.made("closeForumTopic")), 1)
+        self.assertIn("Ta bort det i Telegram", logs.output[0])
+        self.assertEqual(self.store.get_setting(f"topic:{self.GROUP}:Byxor & shorts"), "")
+
     def test_group_without_topics_gets_plain_messages(self):
         api = FakeBotApi(forum=False)
         self.notifier(api).send(self.deal_msg())

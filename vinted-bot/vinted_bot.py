@@ -794,11 +794,40 @@ class TelegramNotifier:
         self._members = {}
 
     def prepare_topics(self, topics: list[str]) -> None:
-        """Skapar gruppens ämnen direkt, så att de syns redan innan första fyndet."""
+        """Skapar gruppens ämnen direkt, så att de syns redan innan första fyndet, och tar bort
+        ämnen som boten skapat men som inte längre finns i config.yaml."""
         for topic in topics:
             self._thread(str(self.chat_id), topic)
             if self._temporary or not self._forum:
-                break  # Telegram svarar inte (nytt försök nästa varv), eller gruppen saknar Ämnen
+                return  # Telegram svarar inte (nytt försök nästa varv), eller gruppen saknar Ämnen
+        if self.store:
+            self._remove_old_topics(set(topics))
+
+    def _remove_old_topics(self, keep: set[str]) -> None:
+        prefix = f"topic:{self.chat_id}:"
+        for key, thread in self.store.settings_starting_with(prefix):
+            name = key[len(prefix):]
+            if name in keep:
+                continue
+            payload = {"chat_id": self.chat_id, "message_thread_id": int(thread)}
+            try:
+                http_post_json(f"{self.api}/deleteForumTopic", payload)
+                log.info("Telegram: tog bort ämnet '%s', som inte längre används.", name)
+            except NotifyError as e:
+                if temporary_error(e):
+                    continue  # nytt försök nästa varv
+                if "not found" not in e.description.lower() and "invalid" not in e.description.lower():
+                    # Saknar boten rätten "Ta bort meddelanden" går ämnet åtminstone att stänga
+                    # (boten skapade det), så att inget mer hamnar där.
+                    try:
+                        http_post_json(f"{self.api}/closeForumTopic", payload)
+                    except (NotifyError, OSError, ValueError, http.client.HTTPException):
+                        pass
+                    log.warning("Telegram: kunde inte ta bort ämnet '%s' (%s) – stängde det i stället. Ta bort det i "
+                                "Telegram, eller ge boten rätten 'Ta bort meddelanden'.", name, e.description)
+            except (OSError, ValueError, http.client.HTTPException):
+                continue
+            self.store.set_setting(key, "")  # klart – försök inte igen
 
     def _thread(self, chat_id: str, topic: str | None, fresh: bool = False) -> int | None:
         """Ämnet (tråden) i gruppen för meddelandet – skapas första gången. None om gruppen saknar Ämnen."""
@@ -1480,6 +1509,10 @@ class Store:
     def set_setting(self, key: str, value: str) -> None:
         self.db.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, value))
         self.db.commit()
+
+    def settings_starting_with(self, prefix: str) -> list[tuple[str, str]]:
+        return self.db.execute("SELECT key, value FROM settings WHERE substr(key, 1, ?) = ? AND value != ''",
+                               (len(prefix), prefix)).fetchall()
 
     def seen_price(self, item_id: int, search: str) -> float | None:
         """Priset när sökningen senast såg annonsen (None = ny för den här sökningen)."""
