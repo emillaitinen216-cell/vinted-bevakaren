@@ -163,6 +163,10 @@ chat_topic: "💬 Snack"
 # och med störst vinst (senaste 30 dagarna). false = ingen statistikflik.
 stats_topic: "📊 Statistik"
 
+# Tar bort inlägg (i gruppen och privat) med fynd i märken som tagits bort härifrån.
+# Telegram låter bara boten ta bort inlägg som är högst 48 timmar gamla. false = behåll dem.
+remove_unwatched_deals: true
+
 # Tyst natt: fynd mellan de här timmarna (svensk tid) kommer utan ljud. false = av.
 quiet_hours: [23, 7]
 
@@ -417,17 +421,6 @@ searches:
     brands:
       J.Lindeberg: 950      # median ~1 060 kr, undre kvartil ~500 kr; ~10 nya annonser per dygn
 
-  - name: Mackage
-    query: mackage
-    catalog: [1206]
-    tags: [Dunjacka]
-    min_price: 900          # kopior finns – be om bilder på etiketterna
-    max_price: 2600
-    min_profit: 1000
-    suspicious_below: 1500
-    brands:
-      Mackage: 3500         # median ~3 950 kr, undre kvartil ~2 500 kr
-
   # ---------------- Fler jackor (Jackor 2052 / Kappor & jackor 1206) ----------------
   #
   # Kalibrerade mot annonspriserna på vinted.se i oktober 2026. "kolla äkthet"-gränsen
@@ -574,22 +567,6 @@ searches:
       retro x: 200
       synchilla: 100
 
-  - name: Carhartt jackor
-    query: carhartt
-    catalog: [2052]
-    tags: [Jacka]
-    max_price: 620
-    min_profit: 570
-    suspicious_below: 230
-    brands:
-      Carhartt: 740         # median ~830 kr, undre kvartil ~520 kr (gäller även Carhartt WIP)
-    premium_keywords:
-      detroit: 250
-      santa fe: 200
-      vintage: 100
-
-  # Abercrombie & Fitch och Hollister: billigare märken med väldigt många annonser, så
-  # vinstgränsen är satt så att bara de allra billigaste blir fynd (november 2026).
   - name: Abercrombie & Fitch jackor
     query: abercrombie
     catalog: [2052]

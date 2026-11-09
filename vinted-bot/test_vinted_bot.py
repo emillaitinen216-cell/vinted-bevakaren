@@ -1916,8 +1916,8 @@ class GroupFeatureTests(unittest.TestCase):
                       "Doudoune Moncler mixte femme", "Kurtka Moncler uniseks damska"):
             self.assertEqual(verdict("Moncler", title, "Moncler", 1000), "fynd", title)
         # "barn coat" och "kid mohair" är herrplagg, inte barnkläder – men "barn 140" är det.
-        self.assertEqual(verdict("Carhartt jackor", "Carhartt Barn Coat brun", "Carhartt", 100), "fynd")
-        self.assertNotEqual(verdict("Carhartt jackor", "Carhartt barn coat barn 140", "Carhartt", 100), "fynd")
+        self.assertEqual(verdict("Ralph Lauren jackor", "Polo Ralph Lauren barn jacket", "Ralph Lauren", 150), "fynd")
+        self.assertNotEqual(verdict("Ralph Lauren jackor", "Ralph Lauren barn jacket barn 140", "Ralph Lauren", 150), "fynd")
         self.assertEqual(verdict("Acne Studios tröjor", "Acne Studios kid mohair cardigan", "Acne Studios", 200), "fynd")
 
 
@@ -2499,6 +2499,32 @@ class StatsTopicTests(unittest.TestCase):
         store.log_deal(vb.Deal(it, "Test", resale=400, cost=200, profit=200, roi=1))
         self.assertEqual(bot.stats_page(day.replace(hour=20)), first)          # samma dag: oförändrad
         self.assertIn("1 fynd", bot.stats_page(day + vb.timedelta(days=1)))
+
+
+class RemoveUnwatchedTests(unittest.TestCase):
+    def test_posts_of_removed_brands_are_deleted(self):
+        store = vb.Store(":memory:")
+        self.addCleanup(store.db.close)
+        cfg = make_cfg()
+        for item_id, brand in ((1, "Nudie Jeans"), (2, "Mackage"), (3, "Carhartt WIP")):
+            store.log_deal(vb.Deal(item(id=item_id, brand=brand), "x", resale=400, cost=200, profit=200, roi=1))
+            store.record_sent("-1001", item_id, item_id, "photo", "x", "u")
+        store.record_sent("7", 9, 2, "photo", "x", "u")                     # privat kopia till en bevakare
+        calls = []
+
+        def post(url, payload, timeout=20):
+            calls.append(payload)
+            if payload["message_id"] == 3:
+                raise vb.NotifyError(400, json.dumps({"description": "Bad Request: message can't be deleted"}))
+            return {"ok": True, "result": True}
+
+        bot = vb.Bot(cfg, [make_search(cfg)], FakeClient(), store, [])      # bevakar bara Nudie
+        with mock.patch.object(vb, "http_post_json", side_effect=post), self.assertLogs("vinted-bot", "INFO") as logs:
+            tg = vb.TelegramNotifier(TOKEN, "-1001", store=store)
+            self.assertEqual(bot.remove_unwatched_deals(tg), 2)
+            self.assertEqual(bot.remove_unwatched_deals(tg), 0)             # bara en gång
+        self.assertEqual(sorted((c["chat_id"], c["message_id"]) for c in calls), [("-1001", 2), ("-1001", 3), ("7", 9)])
+        self.assertIn("1 gick inte att ta bort", logs.output[0])
 
 
 if __name__ == "__main__":

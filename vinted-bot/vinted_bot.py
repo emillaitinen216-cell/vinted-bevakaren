@@ -101,7 +101,8 @@ DEFAULTS: dict = {
     "weekly_report": True,
     "info_topics": True,
     "chat_topic": "💬 Snack",
-    "stats_topic": "📊 Statistik",      # låst flik med vad som säljs bäst bland fynden; false = ingen
+    "stats_topic": "📊 Statistik",
+    "remove_unwatched_deals": True,     # ta bort inlägg med märken som tagits bort ur config.yaml      # låst flik med vad som säljs bäst bland fynden; false = ingen
     "auto_tune": True,                  # boten justerar varje sökings vinstgräns efter hur fynden säljs             # öppen flik där medlemmarna kan prata; false = ingen                # flikarna "👋 Välkommen" och "📖 Start här", som boten skriver och låser              # veckorapport på söndagar, i samma ämne som dagens bästa
 }
 
@@ -978,6 +979,16 @@ class TelegramNotifier:
                 self._members[user_id] = True
         return self._members[user_id]
 
+    def delete_message(self, chat_id: str, message_id: int) -> bool:
+        """Tar bort ett inlägg. False om det inte går (t.ex. äldre än 48 timmar eller boten saknar rätten)."""
+        try:
+            http_post_json(f"{self.api}/deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+            return True
+        except NotifyError as e:
+            if temporary_error(e):
+                raise
+            return "not found" in e.description.lower()  # redan borttaget
+
     def send_private(self, user_id: str, msg: Message) -> None:
         """Ett fynd till en medlems privata chatt (bevakningar). NotifyError om personen inte startat boten."""
         self._deliver(msg, str(user_id))
@@ -1695,6 +1706,16 @@ class Store:
             self.db.execute("UPDATE follows SET checked = ?, price = ? WHERE item_id = ?", (int(time.time()), price, item_id))
         else:
             self.db.execute("UPDATE follows SET checked = ? WHERE item_id = ?", (int(time.time()), item_id))
+        self.db.commit()
+
+    def sent_with_brand(self) -> list[tuple]:
+        """(chat, meddelande, märke) för skickade fynd som inte redan raderats."""
+        return self.db.execute(
+            "SELECT s.chat_id, s.message_id, (SELECT d.brand FROM deals d WHERE d.item_id = s.item_id LIMIT 1) "
+            "FROM sent s WHERE COALESCE(s.status, '') != 'RADERAD'").fetchall()
+
+    def mark_deleted(self, chat_id: str, message_id: int) -> None:
+        self.db.execute("UPDATE sent SET status = 'RADERAD' WHERE chat_id = ? AND message_id = ?", (chat_id, message_id))
         self.db.commit()
 
     def deal_outcomes(self, since: int) -> list[tuple]:
@@ -3054,6 +3075,7 @@ class Bot:
                 notifier.new_run()
                 if not self.dry_run:
                     try:
+                        self.remove_unwatched_deals(notifier)
                         notifier.prepare_topics(self.topic_names())
                         notifier.post_info(self.info_pages(), locked={"👋 Välkommen", "📖 Start här",
                                                                       str(self.cfg.get("stats_topic") or "")})
@@ -3119,6 +3141,32 @@ class Bot:
         if hour is not None and hour is not False and self.cfg.get("summary_topic"):
             names.append(str(self.cfg["summary_topic"]))
         return names
+
+    def remove_unwatched_deals(self, tg: "TelegramNotifier", limit: int = 100) -> int:
+        """Tar bort inlägg med fynd i märken som inte bevakas längre (märket borttaget ur config.yaml)."""
+        if not self.store or not self.cfg.get("remove_unwatched_deals", True):
+            return 0
+
+        def watched(brand: str) -> bool:
+            return any((r := s.rule_for(brand)) and not r.skip for s in self.searches)
+
+        removed = failed = 0
+        for chat, message_id, brand in self.store.sent_with_brand():
+            if brand is None or watched(brand):
+                continue
+            if removed + failed >= limit:
+                break
+            try:
+                ok = tg.delete_message(chat, message_id)
+            except (NotifyError, OSError, http.client.HTTPException):
+                continue  # tillfälligt fel – nytt försök nästa varv
+            removed += ok
+            failed += not ok
+            self.store.mark_deleted(chat, message_id)  # försök inte igen
+        if removed or failed:
+            log.info("Tog bort %d inlägg med märken som inte bevakas längre%s.", removed,
+                     f" ({failed} gick inte att ta bort – äldre än 48 timmar)" if failed else "")
+        return removed
 
     def info_pages(self) -> dict[str, str]:
         """Text (HTML) för flikarna "👋 Välkommen" och "📖 Start här"."""
