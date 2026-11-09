@@ -2376,5 +2376,95 @@ class ResaleToolsTests(unittest.TestCase):
         self.assertIn("🥇 Emil – +1 000 kr (1 sålda)", msg.lines)
 
 
+class TuneAndFollowTests(unittest.TestCase):
+    GROUP = "-1001"
+
+    def setUp(self):
+        self.cfg = make_cfg()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "bot.db"
+        self.store = vb.Store(self.db)
+        self.addCleanup(self.store.db.close)
+
+    def deal(self, search, item_id, sold_after=None, days_ago=3):
+        it = item(id=item_id, brand="Nudie Jeans", url=f"{BASE}/items/{item_id}")
+        self.store.log_deal(vb.Deal(it, search, resale=400, cost=200, profit=200, roi=1))
+        self.store.record_sent(self.GROUP, item_id, item_id, "photo", "x", "u")
+        ts = int(vb.time.time()) - days_ago * 86400
+        self.store.db.execute("UPDATE deals SET ts = ? WHERE item_id = ?", (ts, item_id))
+        if sold_after is not None:
+            self.store.db.execute("UPDATE sent SET status = 'SÅLD', sold_after = ? WHERE item_id = ?", (sold_after, item_id))
+
+    def test_auto_tune_raises_slow_and_lowers_fast_searches(self):
+        slow, fast, quiet = (make_search(self.cfg, name=n, min_profit=100) for n in ("Slö", "Snabb", "Lugn"))
+        for i in range(6):
+            self.deal("Slö", 100 + i)                                     # ingen såld
+        for i in range(4):
+            self.deal("Snabb", 200 + i, sold_after=600)                   # alla sålda på 10 min
+        self.deal("Lugn", 300, sold_after=600)                            # för få för att säga något
+        bot = vb.Bot(self.cfg, [slow, fast, quiet], FakeClient(), self.store, [])
+        with self.assertLogs("vinted-bot", "INFO"):
+            changed = bot.auto_tune(datetime(2026, 11, 10, 12, tzinfo=vb.STOCKHOLM))
+        self.assertEqual(sorted(changed), ["Slö", "Snabb"])
+        self.assertEqual((slow.min_profit, fast.min_profit, quiet.min_profit), (110, 95, 100))
+        self.assertEqual(bot.auto_tune(datetime(2026, 11, 10, 18, tzinfo=vb.STOCKHOLM)), [])   # en gång per dygn
+        for day in range(11, 20):                                         # taket: högst 150 %
+            bot.auto_tune(datetime(2026, 11, day, 12, tzinfo=vb.STOCKHOLM))
+        self.assertEqual(slow.min_profit, 150)
+        self.assertEqual(vb.Bot(make_cfg(auto_tune=False), [slow], FakeClient(), self.store, []).auto_tune(), [])
+
+    def listener(self, body):
+        self.api = MembersTelegram(members=(7,))
+        self.sent = []
+        patcher = mock.patch.object(vb, "http_post_json",
+                                    side_effect=lambda url, payload, timeout=20: self.sent.append(payload) or
+                                    {"ok": True, "result": {"message_id": 1, "chat": {"id": int(payload["chat_id"])}}})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        listener = vb.LegitListener(TOKEN, self.db, self.cfg, [], LEGIT_TIPS, fixed_chat=self.GROUP,
+                                    api=self.api, client=FakeListingClient(body))
+        listener.username = "fyndbot"
+        return listener
+
+    def say(self, listener, update_id, text, chat=7, chat_type="private"):
+        msg = tg_msg(update_id, chat, text, 7, 100, chat_type=chat_type)
+        msg["message"]["from"]["first_name"] = "Emil"
+        self.api.updates = [[msg]]
+        listener.last_command.clear()
+        listener.poll(self.store)
+        return self.sent[-1]["text"]
+
+    def test_follow_commands(self):
+        listener = self.listener(listing_page(42, price="1200.00", title="Maya dunjacka"))
+        text = self.say(listener, 1, "/följ https://www.vinted.se/items/42-maya")
+        self.assertIn("Pris nu: 1 200 kr", text)
+        self.assertEqual(self.store.follows(7), [(42, "Moncler Maya dunjacka", 1200.0)])
+        self.assertIn("1. Moncler Maya dunjacka – 1 200 kr", self.say(listener, 2, "/följer"))
+        self.say(listener, 3, "/avfölj alla")
+        self.assertEqual(self.store.follows(7), [])
+        self.say(listener, 4, "/följ https://www.vinted.se/items/42", chat=int(self.GROUP), chat_type="supergroup")
+        self.assertEqual([p["chat_id"] for p in self.sent[-2:]], ["7", self.GROUP])   # bekräftelse privat + kort svar
+
+    def test_price_drop_and_sold_are_reported_privately(self):
+        self.store.add_follow(7, 42, "Moncler Maya", 1200)
+        self.store.add_follow(8, 42, "Moncler Maya", 1200)
+        self.store.db.execute("UPDATE follows SET checked = 0")
+        sent = []
+        with mock.patch.object(vb, "http_post_json", side_effect=lambda url, payload, timeout=20: sent.append(payload) or
+                               {"ok": True, "result": {"message_id": 1}}):
+            tg = vb.TelegramNotifier(TOKEN, self.GROUP, store=self.store)
+            client = FakeListingClient(listing_page(42, price="900.00"))
+            bot = vb.Bot(self.cfg, [], client, self.store, [tg])
+            self.assertEqual(bot.check_follows(), 2)
+            self.assertIn("📉 Prissänkt: 1 200 → 900 kr", sent[0]["text"])
+            self.assertEqual(bot.check_follows(), 0)                   # kollas igen först om en halvtimme
+            self.store.db.execute("UPDATE follows SET checked = 0")
+            client.body = sold_page(42)
+            self.assertEqual(bot.check_follows(), 2)
+        self.assertIn("❌ Annonsen du följer är såld", sent[-1]["text"])
+        self.assertEqual(self.store.follows(7), [])
+
+
 if __name__ == "__main__":
     unittest.main()

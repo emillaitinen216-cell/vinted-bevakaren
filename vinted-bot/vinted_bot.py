@@ -100,7 +100,8 @@ DEFAULTS: dict = {
     "summary_topic": "⭐ Dagens bästa",
     "weekly_report": True,
     "info_topics": True,
-    "chat_topic": "💬 Snack",             # öppen flik där medlemmarna kan prata; false = ingen                # flikarna "👋 Välkommen" och "📖 Start här", som boten skriver och låser              # veckorapport på söndagar, i samma ämne som dagens bästa
+    "chat_topic": "💬 Snack",
+    "auto_tune": True,                  # boten justerar varje sökings vinstgräns efter hur fynden säljs             # öppen flik där medlemmarna kan prata; false = ingen                # flikarna "👋 Välkommen" och "📖 Start här", som boten skriver och låser              # veckorapport på söndagar, i samma ämne som dagens bästa
 }
 
 
@@ -210,6 +211,7 @@ class Search:
     exclude: list[tuple[str, re.Pattern]]
     premium: list[tuple[str, re.Pattern, float]]
     tags: list[str] = field(default_factory=list)
+    base_min_profit: float | None = None  # min_profit i config.yaml; min_profit kan justeras av boten
     womens: list[tuple[str, re.Pattern]] = field(default_factory=list)
     unisex: list[re.Pattern] = field(default_factory=list)
     exclude_exceptions: list[re.Pattern] = field(default_factory=list)
@@ -1514,6 +1516,10 @@ class Store:
             CREATE TABLE IF NOT EXISTS sales (
                 user_id INTEGER, name TEXT, item_id INTEGER, sold REAL, bought REAL, profit REAL, ts INTEGER,
                 PRIMARY KEY (user_id, item_id));
+            -- Annonser som medlemmar följer (/följ): meddelande vid prissänkning eller när den säljs.
+            CREATE TABLE IF NOT EXISTS follows (
+                user_id INTEGER, item_id INTEGER, title TEXT, price REAL, created INTEGER, checked INTEGER,
+                PRIMARY KEY (user_id, item_id));
             CREATE TABLE IF NOT EXISTS watches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, query TEXT, sizes TEXT,
                 created INTEGER, active INTEGER NOT NULL DEFAULT 1);
@@ -1653,6 +1659,51 @@ class Store:
             "SELECT MIN(s.sold_after) FROM sent s WHERE s.status = 'SÅLD' AND s.sold_after IS NOT NULL AND s.ts >= ? "
             "AND s.item_id IN (SELECT item_id FROM deals WHERE brand = ?) GROUP BY s.item_id", (since, brand)))
         return rows[(len(rows) - 1) // 2] if len(rows) >= 3 else None
+
+    MAX_FOLLOWS = 20  # per person
+
+    def add_follow(self, user_id: int, item_id: int, title: str, price: float | None) -> None:
+        now = int(time.time())
+        self.db.execute("INSERT OR REPLACE INTO follows VALUES (?, ?, ?, ?, ?, ?)", (user_id, item_id, title, price, now, now))
+        self.db.commit()
+
+    def follows(self, user_id: int) -> list[tuple]:
+        """(annons, titel, pris) – personens följda annonser."""
+        return self.db.execute("SELECT item_id, title, price FROM follows WHERE user_id = ? ORDER BY created",
+                               (user_id,)).fetchall()
+
+    def remove_follows(self, user_id: int, item_ids: list[int] | None = None) -> int:
+        if item_ids is None:
+            cur = self.db.execute("DELETE FROM follows WHERE user_id = ?", (user_id,))
+        else:
+            cur = self.db.executemany("DELETE FROM follows WHERE user_id = ? AND item_id = ?", [(user_id, i) for i in item_ids])
+        self.db.commit()
+        return cur.rowcount
+
+    def due_follows(self, limit: int, every: int = 1800) -> dict[int, list[tuple]]:
+        """Följda annonser som är dags att kolla (äldst kollade först): annons -> [(person, titel, pris)]."""
+        rows = self.db.execute("SELECT item_id, MIN(checked) FROM follows WHERE checked <= ? GROUP BY item_id "
+                               "ORDER BY MIN(checked) LIMIT ?", (int(time.time()) - every, limit)).fetchall()
+        return {item_id: self.db.execute("SELECT user_id, title, price FROM follows WHERE item_id = ?",
+                                         (item_id,)).fetchall() for item_id, _ in rows}
+
+    def follow_checked(self, item_id: int, price: float | None = None, gone: bool = False) -> None:
+        if gone:
+            self.db.execute("DELETE FROM follows WHERE item_id = ?", (item_id,))
+        elif price is not None:
+            self.db.execute("UPDATE follows SET checked = ?, price = ? WHERE item_id = ?", (int(time.time()), price, item_id))
+        else:
+            self.db.execute("UPDATE follows SET checked = ? WHERE item_id = ?", (int(time.time()), item_id))
+        self.db.commit()
+
+    def search_outcomes(self, search: str, since: int, until: int) -> tuple[int, int, float | None]:
+        """Sökningens fynd mellan since och until: (antal, sålda inom ett dygn, median till såld i sekunder)."""
+        items = [r[0] for r in self.db.execute("SELECT DISTINCT item_id FROM deals WHERE search = ? AND ts >= ? AND ts < ?",
+                                               (search, since, until))]
+        sold = sorted(r[0] for r in self.db.execute(
+            f"SELECT MIN(sold_after) FROM sent WHERE status = 'SÅLD' AND sold_after IS NOT NULL AND sold_after <= 86400 "
+            f"AND item_id IN ({','.join('?' * len(items))}) GROUP BY item_id", items)) if items else []
+        return len(items), len(sold), (sold[(len(sold) - 1) // 2] if sold else None)
 
     MAX_WATCHES = 10  # per person
 
@@ -2187,10 +2238,16 @@ def guide_text(searches: list[Search], cfg: dict) -> str:
         "<code>/sald 1200</code> – svara på fyndet när du sålt det vidare (eller <code>/sald 1200 400</code>: "
         "såld för, köpt för)",
         "<code>/topplista</code> – månadens vinsttopplista (den 1:a varje månad kommer förra månadens)",
+        "<code>/följ</code> + länk – följ en annons: du får ett privat meddelande när priset sänks eller när den "
+        "blir såld (eller svara på ett fynd med <code>/följ</code>)",
+        "<code>/följer</code> – visa annonserna du följer · <code>/avfölj 2</code> – sluta följa nr 2",
         "Kommandona fungerar här i gruppen och privat hos boten.",
     ]
     if isinstance(quiet, list) and len(quiet) == 2:
         lines += ["", f"🌙 Mellan kl. {quiet[0]} och {quiet[1]} kommer fynden utan ljud."]
+    if cfg.get("auto_tune", True):
+        lines += ["", "🎯 Boten lär sig: märken vars fynd blir liggande kräver större vinst, och märken där allt "
+                      "säljs på minuter får lite fler fynd. Det justeras av sig självt varje dygn."]
     lines += ["", "<b>Märken som bevakas</b> (⚡ = söks extra ofta)"] + brands + [
         "",
         "<b>Bra att veta</b>",
@@ -2267,6 +2324,9 @@ class LegitListener:
                     {"command": "pris", "description": "Vad kostar det på Vinted? T.ex. /pris Moncler Maya"},
                     {"command": "sald", "description": "Sålt vidare? Svara på fyndet med /sald 1200"},
                     {"command": "topplista", "description": "Månadens vinsttopplista"},
+                    {"command": "folj", "description": "Följ en annons: meddelande vid prissänkning eller när den säljs"},
+                    {"command": "foljer", "description": "Visa annonserna du följer"},
+                    {"command": "avfolj", "description": "Sluta följa, t.ex. /avfolj 2 eller /avfolj alla"},
                     {"command": "hjalp", "description": "Hur legitcheck fungerar"}])}, timeout=10)
             except TelegramError:
                 pass
@@ -2376,13 +2436,14 @@ class LegitListener:
             return  # vanligt kommando för andra botar – svara bara på /help@dennabot
         private = (msg.get("chat") or {}).get("type") == "private"
         user_id = (msg.get("from") or {}).get("id")
-        command = {"/sålt": "/sald", "/salt": "/sald", "/sålde": "/sald"}.get(command, command)
+        command = {"/sålt": "/sald", "/salt": "/sald", "/sålde": "/sald", "/följ": "/folj", "/följer": "/foljer",
+                   "/avfölj": "/avfolj"}.get(command, command)
         if command not in ("/legit", "/hjalp", "/help", "/bevaka", "/bevakningar", "/sluta", "/start",
-                           "/pris", "/sald", "/topplista"):
+                           "/pris", "/sald", "/topplista", "/folj", "/foljer", "/avfolj"):
             return
         if command == "/start" and (not private or chat in allowed):
             return  # ägarens /start sköts av discover_telegram_chat
-        own_only = private and command in ("/bevakningar", "/sluta")  # rör bara personens egna bevakningar
+        own_only = private and command in ("/bevakningar", "/sluta", "/foljer", "/avfolj")  # rör bara personens egna bevakningar
         if chat not in allowed and not own_only and not (private and self.is_member(store, user_id)):
             return
         thread = _thread_of(msg)
@@ -2392,6 +2453,13 @@ class LegitListener:
                 return  # samma person skickade nyss ett kommando – skydd mot spam i gruppen
             self.last_command[user_id] = now
             self.watch_command(command, parts[1] if len(parts) > 1 else "", msg, chat, store, thread, private)
+            return
+        if command in ("/folj", "/foljer", "/avfolj"):
+            now = time.monotonic()
+            if now - self.last_command.get(user_id, -1e9) < 3:
+                return
+            self.last_command[user_id] = now
+            self.follow_command(command, parts[1] if len(parts) > 1 else "", msg, chat, store, thread, private)
             return
         if command in ("/pris", "/sald", "/topplista"):
             now = time.monotonic()
@@ -2522,6 +2590,72 @@ class LegitListener:
         lines = [f"{'Snyggt' if profit > 0 else 'Noterat'}, {name}! {'+' if profit >= 0 else ''}{money(profit)} kr{what}.",
                  f"Din vinst den här månaden: {money(total)} kr" + (f" – plats {place} i /topplista." if place else ".")]
         self.reply(chat, msg.get("message_id"), Message("🏆 Sålt!", lines, "", buttons=[]), thread)
+
+    def follow_command(self, command: str, arg: str, msg: dict, chat: str, store: "Store",
+                       thread: int | None, private: bool) -> None:
+        """/följ länk, /följer och /avfölj 2 (eller alla)."""
+        user = msg.get("from") or {}
+        user_id, reply_to = user.get("id"), msg.get("message_id")
+        if not isinstance(user_id, int):
+            return
+        mine = store.follows(user_id)
+        if command == "/foljer":
+            lines = [f"{n}. {title or 'Annons'} – {money(price) + ' kr' if price else 'pris okänt'}"
+                     for n, (_, title, price) in enumerate(mine, 1)] or ["Du följer inga annonser än."]
+            self.reply(chat, reply_to, Message("👀 Annonser du följer", lines + ["", "Sluta följa: /avfolj 2 eller /avfolj alla"],
+                                               "", buttons=[]), thread)
+            return
+        if command == "/avfolj":
+            if fold(arg.strip()) in ("alla", "all"):
+                removed = store.remove_follows(user_id)
+            else:
+                numbers = {int(x) for x in re.findall(r"\d+", arg)}
+                removed = store.remove_follows(user_id, [f[0] for n, f in enumerate(mine, 1) if n in numbers]) if numbers else 0
+            text = f"Slutade följa {removed} annons{'er' if removed != 1 else ''}." if removed else \
+                "Skriv /avfolj och numret från /foljer, t.ex. /avfolj 2 (eller /avfolj alla)."
+            self.reply(chat, reply_to, Message("👀 Följda annonser", [text], "", buttons=[]), thread)
+            return
+        item_id = item_id_in(arg) or item_id_in(msg.get("reply_to_message"))
+        if not item_id:
+            self.reply(chat, reply_to, Message("👀 Följ en annons", [
+                "Skriv /följ och klistra in länken till en Vinted-annons (eller svara på ett fynd med /följ).",
+                "Du får ett privat meddelande när priset sänks eller när den blir såld."], "", buttons=[]), thread)
+            return
+        if len(mine) >= store.MAX_FOLLOWS and item_id not in {f[0] for f in mine}:
+            self.reply(chat, reply_to, Message("👀 Följda annonser", [
+                f"Du följer redan {store.MAX_FOLLOWS} annonser – sluta följa någon med /avfolj först."], "", buttons=[]), thread)
+            return
+        title, price = "", None
+        if self._budget(user_id):
+            try:
+                body = self.client.fetch_listing_page(item_id)
+                listing = parse_listing(body, self.client.base, item_id) if body else None
+            except FetchError:
+                body, listing = "", None
+            if body is None or (listing and listing.sold):
+                self.reply(chat, reply_to, Message("👀 Följ en annons", ["Annonsen är redan såld eller borttagen."],
+                                                   "", buttons=[]), thread)
+                return
+            if listing:
+                title, price = " ".join(x for x in (listing.brand, listing.title) if x)[:80], listing.price
+        url = f"https://www.{self.cfg['domain']}/items/{item_id}"
+        confirm = Message("👀 Du följer annonsen", [title or url, (f"Pris nu: {money(price)} kr. " if price else "") +
+                                                     "Du får ett meddelande här när priset sänks eller när den blir såld.",
+                                                     "Visa alla: /foljer · Sluta: /avfolj"], url)
+        if not private and not self.reply(str(user_id), None, confirm):
+            start = f"https://t.me/{self.username}?start=folj" if self.username else None
+            self.reply(chat, reply_to, Message("👀 Följ en annons", [
+                f"Tryck Starta hos {'@' + self.username if self.username else 'boten'} först, så att den får skriva "
+                "till dig privat – skriv sedan /följ igen."], "",
+                buttons=[[{"text": "Starta boten", "url": start}]] if start else []), thread)
+            return
+        store.add_follow(user_id, item_id, title, price)
+        if private:
+            self.reply(chat, reply_to, confirm, thread)
+        else:
+            name = str(user.get("first_name") or "")[:20]
+            self.reply(chat, reply_to, Message("👀 Följer", [f"Klart{', ' + name if name else ''}! Du får besked privat."],
+                                               "", buttons=[]), thread)
 
     def watch_command(self, command: str, arg: str, msg: dict, chat: str, store: "Store",
                       thread: int | None, private: bool) -> None:
@@ -2847,6 +2981,7 @@ class Bot:
         varv börjar där det här slutade – så att varje körning i molnet ryms inom en debiterad minut."""
         started = time.monotonic()  # tidsgränsen räknar även in fynd som skickas om
         self._cycle_started, self._inspect_off = started, False
+        self.apply_tuning()
         self._pauses_left = self.block_pauses
         for notifier in self.notifiers:
             if isinstance(notifier, TelegramNotifier):
@@ -2901,12 +3036,14 @@ class Bot:
                 self.store.set_setting("next_search", str((start_at + done) % n))
         # Sålt-kollen får köra en minut efter tidsgränsen: i molnet lyssnar boten ändå på
         # Telegram ett par minuter till, så det tar ingen tid från sökningarna.
-        try:
-            self.check_sold(max_checks=8, deadline=started + self.time_budget + 60 if self.time_budget else None)
-        except Blocked:
-            pass  # Vinted spärrar just nu – kollas nästa varv
-        except Exception:
-            log.exception("Kunde inte kolla om fynden är sålda")
+        deadline = started + self.time_budget + 60 if self.time_budget else None
+        for check, what in ((self.check_sold, "om fynden är sålda"), (self.check_follows, "de följda annonserna")):
+            try:
+                check(deadline=deadline)
+            except Blocked:
+                break  # Vinted spärrar just nu – kollas nästa varv
+            except Exception:
+                log.exception("Kunde inte kolla %s", what)
         return total
 
     def topic_names(self) -> list[str]:
@@ -3057,10 +3194,91 @@ class Bot:
             return False
         return True
 
+    TUNE_MIN, TUNE_MAX = 0.8, 1.5  # vinstgränsen kan bli 80–150 % av den i config.yaml
+
+    def apply_tuning(self) -> None:
+        """Sätter varje sökings vinstgräns till config.yaml-värdet gånger den sparade justeringen."""
+        for search in self.searches:
+            if search.base_min_profit is None:
+                search.base_min_profit = search.min_profit
+            factor = 1.0
+            if self.store and self.cfg.get("auto_tune", True):
+                try:
+                    factor = float(self.store.get_setting(f"tune:{search.name}") or 1)
+                except ValueError:
+                    pass
+            search.min_profit = round(search.base_min_profit * min(self.TUNE_MAX, max(self.TUNE_MIN, factor)))
+
+    def auto_tune(self, now: datetime | None = None) -> list[str]:
+        """En gång per dygn: fynd som sällan säljs inom ett dygn höjer sökningens vinstgräns (färre, bättre fynd);
+        fynd som säljs på minuter sänker den lite (fler fynd i det som går åt). Bara sökningar med nog många fynd."""
+        if not self.cfg.get("auto_tune", True) or self.dry_run or not self.store:
+            return []
+        now = now or datetime.now(STOCKHOLM)
+        if self.store.get_setting("tune:last") == now.date().isoformat():
+            return []
+        self.store.set_setting("tune:last", now.date().isoformat())
+        until = int(now.timestamp()) - 86400                 # fynd som hunnit få ett dygn på sig
+        changed = []
+        for search in self.searches:
+            deals, sold, median = self.store.search_outcomes(search.name, until - 14 * 86400, until)
+            key = f"tune:{search.name}"
+            factor = float(self.store.get_setting(key) or 1)
+            if deals >= 5 and sold / deals < 0.2:
+                new = min(self.TUNE_MAX, factor * 1.1)       # fynden blir liggande: kräv mer vinst
+            elif sold >= 3 and sold / deals >= 0.6 and median is not None and median <= 1800:
+                new = max(self.TUNE_MIN, factor * 0.95)      # allt går åt på minuter: släpp fram lite fler
+            else:
+                continue
+            if abs(new - factor) > 1e-9:
+                self.store.set_setting(key, f"{new:.3f}")
+                changed.append(search.name)
+        self.apply_tuning()
+        if changed:
+            log.info("Justerade vinstgränsen för %d sökningar efter hur fynden säljs: %s", len(changed), ", ".join(changed))
+        return changed
+
+    def check_follows(self, max_checks: int = 5, deadline: float | None = None) -> int:
+        """Kollar annonser som medlemmar följer (/följ): prissänkt eller såld -> privat meddelande."""
+        tg = next((n for n in self.notifiers if isinstance(n, TelegramNotifier)), None)
+        if self.dry_run or not self.store or not tg or not hasattr(self.client, "fetch_listing_page"):
+            return 0
+        told = 0
+        for i, (item_id, people) in enumerate(self.store.due_follows(max_checks).items()):
+            if i:
+                if deadline and time.monotonic() >= deadline:
+                    break
+                self._pause()
+            try:
+                body = self.client.fetch_listing_page(item_id)
+                listing = parse_listing(body, self.client.base, item_id) if body else None
+            except Blocked:
+                raise
+            except Exception:
+                continue  # nytt försök nästa varv
+            url = f"https://www.{self.cfg['domain']}/items/{item_id}"
+            gone = body is None or bool(listing and listing.sold)
+            price = listing.price if listing else None
+            for user_id, title, old in people:
+                if gone:
+                    msg = Message("❌ Annonsen du följer är såld", [title or "", "Den är borttagen från dina följda annonser."], url)
+                elif price is not None and old is not None and price < old - 0.5:
+                    msg = Message(f"📉 Prissänkt: {money(old)} → {money(price)} kr", [title or "",
+                                  f"Sänkt med {money(old - price)} kr. Skynda dig om du vill ha den!"], url)
+                else:
+                    continue
+                try:
+                    tg.send_private(str(user_id), msg)
+                    told += 1
+                except Exception as e:  # personen har stoppat boten e.d.
+                    log.warning("Kunde inte meddela en följare (%s)", getattr(e, "status", type(e).__name__))
+            self.store.follow_checked(item_id, price, gone)
+        return told
+
     def try_daily_summary(self) -> None:
         """Dagens bästa och (på söndagar) veckorapporten – fel här får aldrig stoppa boten."""
         for report, what in ((self.daily_summary, "dagens bästa fynd"), (self.weekly_report, "veckorapporten"),
-                             (self.monthly_leaderboard, "månadens topplista")):
+                             (self.monthly_leaderboard, "månadens topplista"), (self.auto_tune, "självjusteringen")):
             try:
                 report()
             except Exception:

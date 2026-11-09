@@ -166,6 +166,11 @@ quiet_hours: [23, 7]
 # och orden i annonsen. Redan sålda annonser skickas inte. false = av.
 deal_risk: true
 
+# Självjustering: en gång per dygn tittar boten på hur varje sökings fynd sålts de senaste
+# två veckorna. Blir fynden liggande höjs vinstgränsen 10 %, säljs allt på minuter sänks den
+# 5 %. Den hålls mellan 80 och 150 % av min_profit nedan. false = bara min_profit gäller.
+auto_tune: true
+
 # --------------------------------------------------------------------------
 # Sökningar
 #

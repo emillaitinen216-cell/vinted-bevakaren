@@ -275,6 +275,14 @@ fästs och uppdateras av sig själva när märkena i `config.yaml` ändras.
 - Märken vars fynd brukar säljas inom en timme får raden *⚡ Moncler-fynd brukar säljas
   inom 15 min – var snabb*.
 
+**👀 /följ.** `/följ` + länk till en Vinted-annons (eller som svar på ett fynd) ger ett
+privat meddelande när priset sänks eller när annonsen blir såld. `/följer` visar
+annonserna och `/avfölj 2` eller `/avfölj alla` slutar följa. Varje annons kollas ungefär
+var halvtimme.
+
+**🎯 Självjustering.** En gång per dygn höjer boten vinstgränsen för sökningar vars fynd
+sällan säljs inom ett dygn, och sänker den lite där allt säljs på minuter (`auto_tune`).
+
 **🙋 Jag tar den.** Under varje fynd i gruppen finns en knapp. Den som trycker
 först får sitt namn på knappen (*"🙋 Emil tar den"*), så att inte två köper
 samma plagg. Trycker samma person igen släpps fyndet. Trycker någon annan får
