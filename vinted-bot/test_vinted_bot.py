@@ -2510,6 +2510,8 @@ class RemoveUnwatchedTests(unittest.TestCase):
             store.log_deal(vb.Deal(item(id=item_id, brand=brand), "x", resale=400, cost=200, profit=200, roi=1))
             store.record_sent("-1001", item_id, item_id, "photo", "x", "u")
         store.record_sent("7", 9, 2, "photo", "x", "u")                     # privat kopia till en bevakare
+        store.record_sent("-1001", 50, 2, "photo", "x", "u")
+        store.db.execute("UPDATE sent SET ts = ts - 3 * 86400 WHERE message_id = 50")   # för gammal för Telegram
         calls = []
 
         def post(url, payload, timeout=20):
@@ -2524,7 +2526,7 @@ class RemoveUnwatchedTests(unittest.TestCase):
             self.assertEqual(bot.remove_unwatched_deals(tg), 2)
             self.assertEqual(bot.remove_unwatched_deals(tg), 0)             # bara en gång
         self.assertEqual(sorted((c["chat_id"], c["message_id"]) for c in calls), [("-1001", 2), ("-1001", 3), ("7", 9)])
-        self.assertIn("1 gick inte att ta bort", logs.output[0])
+        self.assertIn("1 nekades av Telegram (Bad Request: message can't be deleted)", logs.output[0])
 
 
 if __name__ == "__main__":

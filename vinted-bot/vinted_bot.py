@@ -979,15 +979,15 @@ class TelegramNotifier:
                 self._members[user_id] = True
         return self._members[user_id]
 
-    def delete_message(self, chat_id: str, message_id: int) -> bool:
-        """Tar bort ett inlägg. False om det inte går (t.ex. äldre än 48 timmar eller boten saknar rätten)."""
+    def delete_message(self, chat_id: str, message_id: int) -> str | None:
+        """Tar bort ett inlägg. None om det gick (eller redan var borttaget), annars Telegrams förklaring."""
         try:
             http_post_json(f"{self.api}/deleteMessage", {"chat_id": chat_id, "message_id": message_id})
-            return True
+            return None
         except NotifyError as e:
             if temporary_error(e):
                 raise
-            return "not found" in e.description.lower()  # redan borttaget
+            return None if "not found" in e.description.lower() else e.description
 
     def send_private(self, user_id: str, msg: Message) -> None:
         """Ett fynd till en medlems privata chatt (bevakningar). NotifyError om personen inte startat boten."""
@@ -1709,10 +1709,10 @@ class Store:
         self.db.commit()
 
     def sent_with_brand(self) -> list[tuple]:
-        """(chat, meddelande, märke) för skickade fynd som inte redan raderats."""
+        """(chat, meddelande, märke, skickat) för skickade fynd som inte redan raderats, nyaste först."""
         return self.db.execute(
-            "SELECT s.chat_id, s.message_id, (SELECT d.brand FROM deals d WHERE d.item_id = s.item_id LIMIT 1) "
-            "FROM sent s WHERE COALESCE(s.status, '') != 'RADERAD'").fetchall()
+            "SELECT s.chat_id, s.message_id, (SELECT d.brand FROM deals d WHERE d.item_id = s.item_id LIMIT 1), s.ts "
+            "FROM sent s WHERE COALESCE(s.status, '') != 'RADERAD' ORDER BY s.ts DESC").fetchall()
 
     def mark_deleted(self, chat_id: str, message_id: int) -> None:
         self.db.execute("UPDATE sent SET status = 'RADERAD' WHERE chat_id = ? AND message_id = ?", (chat_id, message_id))
@@ -3150,22 +3150,29 @@ class Bot:
         def watched(brand: str) -> bool:
             return any((r := s.rule_for(brand)) and not r.skip for s in self.searches)
 
-        removed = failed = 0
-        for chat, message_id, brand in self.store.sent_with_brand():
+        removed = failed = too_old = 0
+        reason = ""
+        for chat, message_id, brand, ts in self.store.sent_with_brand():
             if brand is None or watched(brand):
+                continue
+            if time.time() - (ts or 0) > 47 * 3600:  # Telegram låter bara boten ta bort inlägg yngre än 48 timmar
+                too_old += 1
+                self.store.mark_deleted(chat, message_id)
                 continue
             if removed + failed >= limit:
                 break
             try:
-                ok = tg.delete_message(chat, message_id)
+                why = tg.delete_message(chat, message_id)
             except (NotifyError, OSError, http.client.HTTPException):
                 continue  # tillfälligt fel – nytt försök nästa varv
-            removed += ok
-            failed += not ok
+            if why:
+                failed, reason = failed + 1, reason or why
+            else:
+                removed += 1
             self.store.mark_deleted(chat, message_id)  # försök inte igen
-        if removed or failed:
-            log.info("Tog bort %d inlägg med märken som inte bevakas längre%s.", removed,
-                     f" ({failed} gick inte att ta bort – äldre än 48 timmar)" if failed else "")
+        if removed or failed or too_old:
+            log.info("Tog bort %d inlägg med märken som inte bevakas längre; %d var för gamla (över 48 timmar)%s.",
+                     removed, too_old, f", {failed} nekades av Telegram ({reason})" if failed else "")
         return removed
 
     def info_pages(self) -> dict[str, str]:
