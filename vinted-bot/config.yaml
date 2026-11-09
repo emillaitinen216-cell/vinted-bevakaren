@@ -561,21 +561,6 @@ searches:
       arctic parka: 300
       john rich: 200
 
-  - name: Haglöfs
-    query: haglöfs
-    catalog: [1206]
-    tags: [Jacka]
-    max_price: 400
-    min_profit: 300
-    brands:
-      Haglöfs: 490          # median ~540 kr, undre kvartil ~310 kr
-    premium_keywords:
-      gore-tex: 200
-      gore tex: 200
-      goretex: 200
-      spitz: 300
-      roc: 150
-
   - name: Patagonia jackor
     query: patagonia
     catalog: [2052]
