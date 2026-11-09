@@ -6,7 +6,7 @@ märkesplagg dyker upp så billigt att det går att sälja vidare med vinst.
 Färdiga sökningar finns för:
 
 - **Herrjeans:** Nudie Jeans, Replay, Dondup, Diesel, Jacob Cohën, A.P.C., Acne Studios
-  och Tramarossa, plus bootcut-, flare-, vintage- och Y2K-sökningar (Levi's 517, Diesel
+  Tramarossa och Edwin, plus bootcut-, flare-, vintage- och Y2K-sökningar (Levi's 517, Diesel
   Zatiny, True Religion, Evisu, Rock Revival, Wrangler, Lee …)
 - **Fältjackor:** hela kategorin *Militär- och bruksjackor* (Stone Island,
   C.P. Company, Ralph Lauren, Acne Studios, Barbour, Fjällräven), Barbour och

@@ -332,6 +332,21 @@ searches:
       selvedge: 150
       selvage: 150
 
+  - name: Edwin
+    query: edwin
+    catalog: [257]
+    tags: [Jeans]
+    max_price: 230
+    min_profit: 140
+    brands:
+      Edwin: 400            # median ~370 kr, mitten-hälften 230–700 kr; ~15 nya annonser per dygn
+    premium_keywords:
+      selvedge: 200         # japansk selvedge-denim är det som är värt mest
+      selvage: 200
+      red listed: 150
+      ed-55: 100
+      ed-71: 50
+
   - name: Y2K jeans
     query: y2k jeans
     catalog: [257]
