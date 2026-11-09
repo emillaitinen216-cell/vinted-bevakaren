@@ -159,6 +159,10 @@ info_topics: true
 # Öppen flik där medlemmarna kan prata, fråga om äkthet och sälja till varandra. false = ingen.
 chat_topic: "💬 Snack"
 
+# Låst flik där boten varje dag visar vilka märken bland fynden som säljs snabbast, mest
+# och med störst vinst (senaste 30 dagarna). false = ingen statistikflik.
+stats_topic: "📊 Statistik"
+
 # Tyst natt: fynd mellan de här timmarna (svensk tid) kommer utan ljud. false = av.
 quiet_hours: [23, 7]
 

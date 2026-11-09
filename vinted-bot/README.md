@@ -283,6 +283,10 @@ var halvtimme.
 **🎯 Självjustering.** En gång per dygn höjer boten vinstgränsen för sökningar vars fynd
 sällan säljs inom ett dygn, och sänker den lite där allt säljs på minuter (`auto_tune`).
 
+**📊 Statistik.** En låst flik som boten uppdaterar varje dag: vilka märken bland
+gruppens fynd de senaste 30 dagarna som säljs snabbast, flest sålda, störst vinst per
+sålt fynd och vilka som oftast blir liggande (`stats_topic`).
+
 **🙋 Jag tar den.** Under varje fynd i gruppen finns en knapp. Den som trycker
 först får sitt namn på knappen (*"🙋 Emil tar den"*), så att inte två köper
 samma plagg. Trycker samma person igen släpps fyndet. Trycker någon annan får

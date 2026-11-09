@@ -101,6 +101,7 @@ DEFAULTS: dict = {
     "weekly_report": True,
     "info_topics": True,
     "chat_topic": "💬 Snack",
+    "stats_topic": "📊 Statistik",      # låst flik med vad som säljs bäst bland fynden; false = ingen
     "auto_tune": True,                  # boten justerar varje sökings vinstgräns efter hur fynden säljs             # öppen flik där medlemmarna kan prata; false = ingen                # flikarna "👋 Välkommen" och "📖 Start här", som boten skriver och låser              # veckorapport på söndagar, i samma ämne som dagens bästa
 }
 
@@ -1696,6 +1697,14 @@ class Store:
             self.db.execute("UPDATE follows SET checked = ? WHERE item_id = ?", (int(time.time()), item_id))
         self.db.commit()
 
+    def deal_outcomes(self, since: int) -> list[tuple]:
+        """(sökning, märke, vinst, status, sekunder till såld) per fynd sedan since."""
+        return self.db.execute(
+            "SELECT d.search, d.brand, MAX(d.profit), "
+            "(SELECT s.status FROM sent s WHERE s.item_id = d.item_id AND s.status IS NOT NULL LIMIT 1), "
+            "(SELECT MIN(s.sold_after) FROM sent s WHERE s.item_id = d.item_id AND s.status = 'SÅLD') "
+            "FROM deals d WHERE d.ts >= ? GROUP BY d.item_id", (since,)).fetchall()
+
     def search_outcomes(self, search: str, since: int, until: int) -> tuple[int, int, float | None]:
         """Sökningens fynd mellan since och until: (antal, sålda inom ett dygn, median till såld i sekunder)."""
         items = [r[0] for r in self.db.execute("SELECT DISTINCT item_id FROM deals WHERE search = ? AND ts >= ? AND ts < ?",
@@ -2192,9 +2201,63 @@ def welcome_text() -> str:
     ])
 
 
+# Hur märkena visas i listor: sökningarnas märkesnycklar -> namn (None = alias som inte visas för sig).
+BRAND_NAMES = {"Abercrombie": "Abercrombie & Fitch", "Nudie": "Nudie Jeans", "Burberrys": None, "AMI": None}
+
+
+def stats_text(rows: list[tuple], searches: list[Search], cfg: dict, today: str) -> str:
+    """Flikens statistik: vilka märken bland gruppens fynd som säljs snabbast, mest och med störst vinst.
+    rows: (sökning, märke, vinst, status, sekunder till såld) per fynd de senaste 30 dagarna."""
+    by_name = {s.name: s for s in searches}
+    brands: dict[str, dict] = {}
+    for search, brand, profit, status, after in rows:
+        rule = by_name[search].rule_for(brand) if search in by_name else None
+        label = rule.label if rule and rule.label != "övriga märken" else brand
+        name = {"Burberrys": "Burberry", "AMI": "Ami Paris"}.get(label) or BRAND_NAMES.get(label) or label
+        b = brands.setdefault(name, {"deals": 0, "sold": [], "profit": []})
+        b["deals"] += 1
+        if status == "SÅLD" and after is not None:
+            b["sold"].append(after)
+            b["profit"].append(profit)
+
+    def median(xs):
+        xs = sorted(xs)
+        return xs[(len(xs) - 1) // 2]
+
+    medals = ["🥇", "🥈", "🥉", "4.", "5."]
+    sold_some = {n: b for n, b in brands.items() if len(b["sold"]) >= 2}
+    fastest = sorted(sold_some.items(), key=lambda x: median(x[1]["sold"]))[:5]
+    most = sorted(((n, b) for n, b in brands.items() if b["sold"]), key=lambda x: (-len(x[1]["sold"]), -len(x[1]["sold"]) / x[1]["deals"], x[0]))[:5]
+    richest = sorted(sold_some.items(), key=lambda x: -sum(x[1]["profit"]) / len(x[1]["profit"]))[:5]
+    slow = sorted(((n, b) for n, b in brands.items() if b["deals"] >= 4),
+                  key=lambda x: (len(x[1]["sold"]) / x[1]["deals"], -x[1]["deals"]))[:3]
+    e = lambda t: escape(t, quote=False)
+    lines = ["<b>📊 Det här säljs bäst</b>",
+             "Bland gruppens fynd de senaste 30 dagarna – uppdateras varje dag.", ""]
+    total = sum(b["deals"] for b in brands.values())
+    sold = sum(len(b["sold"]) for b in brands.values())
+    if not total:
+        return "\n".join(lines + ["Inga fynd än – statistiken kommer när de första fynden har hunnit säljas."])
+    lines.append(f"{total} fynd, varav {sold} sålda ({sold * 100 // total} %).")
+    sections = [
+        ("⚡ Säljs snabbast", [f"{medals[i]} {e(n)} – hälften {within(median(b['sold']))}" for i, (n, b) in enumerate(fastest)]),
+        ("🔥 Flest sålda", [f"{medals[i]} {e(n)} – {len(b['sold'])} av {b['deals']} fynd sålda"
+                           for i, (n, b) in enumerate(most)]),
+        ("💰 Störst vinst per sålt fynd", [f"{medals[i]} {e(n)} – ≈ +{money(sum(b['profit']) / len(b['profit']))} kr"
+                                         for i, (n, b) in enumerate(richest)]),
+        ("🐢 Blir oftast liggande", [f"• {e(n)} – {len(b['sold'])} av {b['deals']} sålda" for n, b in slow]),
+    ]
+    for title, items in sections:
+        if items:
+            lines += ["", f"<b>{title}</b>"] + items
+    lines += ["", f"<i>Senast uppdaterad {today}. \"Såld\" = annonsen försvann från Vinted efter att fyndet "
+                  "postades här.</i>"]
+    return "\n".join(lines)
+
+
 def guide_text(searches: list[Search], cfg: dict) -> str:
     """Hur gruppen fungerar, med märkeslistan direkt ur config.yaml (uppdateras när den ändras)."""
-    shown = {"Abercrombie": "Abercrombie & Fitch", "Nudie": "Nudie Jeans", "Burberrys": None, "AMI": None}
+    shown = BRAND_NAMES
     topics: dict[str, dict[str, bool]] = {}  # flik -> märke -> söks extra ofta
     for search in searches:
         brands = topics.setdefault(topic_for(search.tags, cfg) or "Övrigt", {})
@@ -2245,6 +2308,9 @@ def guide_text(searches: list[Search], cfg: dict) -> str:
     ]
     if isinstance(quiet, list) and len(quiet) == 2:
         lines += ["", f"🌙 Mellan kl. {quiet[0]} och {quiet[1]} kommer fynden utan ljud."]
+    if cfg.get("stats_topic"):
+        lines += ["", f"<b>{escape(str(cfg['stats_topic']), quote=False)}</b> visar varje dag vilka märken som säljs "
+                      "snabbast, mest och med störst vinst bland fynden här."]
     if cfg.get("auto_tune", True):
         lines += ["", "🎯 Boten lär sig: märken vars fynd blir liggande kräver större vinst, och märken där allt "
                       "säljs på minuter får lite fler fynd. Det justeras av sig självt varje dygn."]
@@ -2989,7 +3055,8 @@ class Bot:
                 if not self.dry_run:
                     try:
                         notifier.prepare_topics(self.topic_names())
-                        notifier.post_info(self.info_pages(), locked={"👋 Välkommen", "📖 Start här"})
+                        notifier.post_info(self.info_pages(), locked={"👋 Välkommen", "📖 Start här",
+                                                                      str(self.cfg.get("stats_topic") or "")})
                     except Exception as e:  # ämnena får aldrig stoppa sökningarna
                         log.warning("Telegram: kunde inte förbereda ämnena (%s) – fortsätter", type(e).__name__)
         try:
@@ -3060,7 +3127,22 @@ class Bot:
         pages = {"👋 Välkommen": welcome_text(), "📖 Start här": guide_text(self.searches, self.cfg)}
         if chat := self.cfg.get("chat_topic"):
             pages[str(chat)] = chat_text()
+        if (stats := self.cfg.get("stats_topic")) and self.store:
+            pages[str(stats)] = self.stats_page()
         return pages
+
+    def stats_page(self, now: datetime | None = None) -> str:
+        """Statistikfliken räknas om en gång per dag (så att inlägget bara redigeras då)."""
+        now = now or datetime.now(STOCKHOLM)
+        today = now.date().isoformat()
+        cached = self.store.get_setting("stats:text")
+        if cached and self.store.get_setting("stats:day") == today:
+            return cached
+        rows = self.store.deal_outcomes(int(now.timestamp()) - 30 * 86400)
+        text = stats_text(rows, self.searches, self.cfg, now.strftime("%-d/%-m"))
+        self.store.set_setting("stats:text", text)
+        self.store.set_setting("stats:day", today)
+        return text
 
     def check_sold(self, max_checks: int = 8, deadline: float | None = None) -> int:
         """Kollar äldre fynd igen och ändrar dem till "❌ SÅLD" i Telegram när plaggen är sålda."""

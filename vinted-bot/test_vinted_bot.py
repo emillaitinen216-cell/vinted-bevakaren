@@ -1512,12 +1512,12 @@ class GroupFeatureTests(unittest.TestCase):
         bot.run_cycle()
         bot.run_cycle()
         self.assertEqual([p["name"] for p in api.made("createForumTopic")],
-                         ["👋 Välkommen", "📖 Start här", "💬 Snack", "Dunjackor", "Jackor", "Jeans",
+                         ["👋 Välkommen", "📖 Start här", "💬 Snack", "📊 Statistik", "Dunjackor", "Jackor", "Jeans",
                           "Tröjor & skjortor", "Byxor & shorts", "⭐ Dagens bästa"])
         self.assertEqual(len(api.made("getChat")), 2)            # en gång per varv
         self.assertEqual(api.made("sendPhoto"), [])
-        self.assertEqual([p["message_thread_id"] for p in api.made("sendMessage")], [500, 501, 502])  # infoflikarna, en gång
-        self.assertEqual([p["message_thread_id"] for p in api.made("closeForumTopic")], [500, 501])  # Snack är öppen
+        self.assertEqual([p["message_thread_id"] for p in api.made("sendMessage")], [500, 501, 502, 503])  # en gång
+        self.assertEqual([p["message_thread_id"] for p in api.made("closeForumTopic")], [500, 501, 503])  # Snack är öppen
 
     def test_info_topics_are_written_once_pinned_locked_and_updated(self):
         api = FakeBotApi()
@@ -2464,6 +2464,41 @@ class TuneAndFollowTests(unittest.TestCase):
             self.assertEqual(bot.check_follows(), 2)
         self.assertIn("❌ Annonsen du följer är såld", sent[-1]["text"])
         self.assertEqual(self.store.follows(7), [])
+
+
+class StatsTopicTests(unittest.TestCase):
+    def test_stats_text(self):
+        cfg = make_cfg()
+        searches = [make_search(cfg, name="Moncler", brands={"Moncler": 3000}),
+                    make_search(cfg, name="Burberry", brands={"Burberry": 1000, "Burberrys": 1000}),
+                    make_search(cfg, name="Nudie", brands={"Nudie": 400})]
+        rows = [("Moncler", "Moncler", 1500, "SÅLD", 300), ("Moncler", "Moncler", 1200, "SÅLD", 900),
+                ("Moncler", "Moncler", 900, None, None),
+                ("Burberry", "Burberrys", 400, "SÅLD", 7200), ("Burberry", "Burberry", 300, "SÅLD", 3 * 3600),
+                ("Nudie", "Nudie Jeans", 200, None, None), ("Nudie", "Nudie Jeans", 200, None, None),
+                ("Nudie", "Nudie Jeans", 200, "SÅLD", 600), ("Nudie", "Nudie Jeans", 200, None, None)]
+        text = vb.stats_text(rows, searches, cfg, "9/11")
+        self.assertIn("9 fynd, varav 5 sålda (55 %).", text)
+        self.assertIn("🥇 Moncler – hälften inom 5 min", text)
+        self.assertIn("🥈 Burberry – hälften inom 2 tim", text)
+        self.assertIn("🥇 Burberry – 2 av 2 fynd sålda", text)
+        self.assertIn("🥈 Moncler – 2 av 3 fynd sålda", text)
+        self.assertIn("🥇 Moncler – ≈ +1 350 kr", text)
+        self.assertIn("• Nudie Jeans – 1 av 4 sålda", text)
+        self.assertNotIn("Burberrys", text)
+        self.assertIn("Inga fynd än", vb.stats_text([], searches, cfg, "9/11"))
+
+    def test_stats_page_is_computed_once_a_day(self):
+        store = vb.Store(":memory:")
+        self.addCleanup(store.db.close)
+        cfg = make_cfg()
+        bot = vb.Bot(cfg, [make_search(cfg)], FakeClient(), store, [])
+        day = datetime(2026, 11, 9, 12, tzinfo=vb.STOCKHOLM)
+        first = bot.stats_page(day)
+        it = item(id=5)
+        store.log_deal(vb.Deal(it, "Test", resale=400, cost=200, profit=200, roi=1))
+        self.assertEqual(bot.stats_page(day.replace(hour=20)), first)          # samma dag: oförändrad
+        self.assertIn("1 fynd", bot.stats_page(day + vb.timedelta(days=1)))
 
 
 if __name__ == "__main__":
