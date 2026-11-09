@@ -256,6 +256,11 @@ vilket ämne styrs av `topics` i `config.yaml` (sökningarnas taggar). Utan
 Ämnen, eller utan rätten, kommer fynden i gruppen som vanligt. `/legit` som
 skrivs i ett ämne besvaras i samma ämne.
 
+**👋 Välkommen och 📖 Start här.** Boten skapar två låsta flikar: en kort
+välkomsttext och en guide till gruppens funktioner, kommandon och märken. Texterna
+fästs och uppdateras av sig själva när märkena i `config.yaml` ändras.
+`info_topics: false` stänger av dem.
+
 **🙋 Jag tar den.** Under varje fynd i gruppen finns en knapp. Den som trycker
 först får sitt namn på knappen (*"🙋 Emil tar den"*), så att inte två köper
 samma plagg. Trycker samma person igen släpps fyndet. Trycker någon annan får

@@ -1512,9 +1512,36 @@ class GroupFeatureTests(unittest.TestCase):
         bot.run_cycle()
         bot.run_cycle()
         self.assertEqual([p["name"] for p in api.made("createForumTopic")],
-                         ["Dunjackor", "Jackor", "Jeans", "Tröjor & skjortor", "Byxor & shorts", "⭐ Dagens bästa"])
+                         ["👋 Välkommen", "📖 Start här", "Dunjackor", "Jackor", "Jeans", "Tröjor & skjortor",
+                          "Byxor & shorts", "⭐ Dagens bästa"])
         self.assertEqual(len(api.made("getChat")), 2)            # en gång per varv
-        self.assertEqual(api.made("sendPhoto") + api.made("sendMessage"), [])
+        self.assertEqual(api.made("sendPhoto"), [])
+        self.assertEqual([p["message_thread_id"] for p in api.made("sendMessage")], [500, 501])  # infoflikarna, en gång
+
+    def test_info_topics_are_written_once_pinned_locked_and_updated(self):
+        api = FakeBotApi()
+        tg = self.notifier(api)
+        tg.prepare_topics(["👋 Välkommen"])
+        tg.post_info({"👋 Välkommen": "<b>Hej</b>"})
+        (post,) = api.made("sendMessage")
+        self.assertEqual((post["text"], post["message_thread_id"]), ("<b>Hej</b>", 500))
+        self.assertEqual(len(api.made("pinChatMessage")), 1)
+        self.assertEqual(api.made("closeForumTopic"), [{"chat_id": self.GROUP, "message_thread_id": 500}])
+        tg.post_info({"👋 Välkommen": "<b>Hej</b>"})
+        self.assertEqual(len(api.made("sendMessage")), 1)          # oförändrad – skickas inte igen
+        tg.post_info({"👋 Välkommen": "<b>Hej igen</b>"})
+        (edit,) = api.made("editMessageText")
+        self.assertEqual((edit["message_id"], edit["text"]), (100, "<b>Hej igen</b>"))
+
+    def test_guide_lists_the_shipped_brands(self):
+        cfg, searches = vb.load_config(Path(vb.HERE / "config.yaml"))
+        text = vb.guide_text(searches, cfg)
+        self.assertLess(len(text), 4096)
+        self.assertIn("Moncler ⚡", text)
+        self.assertIn("Stone Island ⚡", text)
+        self.assertIn("Abercrombie &amp; Fitch", text)
+        self.assertNotIn("Burberrys", text)
+        self.assertNotIn("Byxor", text)
 
     def test_topics_no_longer_in_the_config_are_removed(self):
         self.store.set_setting(f"topic:{self.GROUP}:Byxor & shorts", "77")

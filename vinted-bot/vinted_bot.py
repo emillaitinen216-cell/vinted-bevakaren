@@ -17,6 +17,7 @@ Se README.md för installation och inställningar.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import logging
@@ -97,7 +98,8 @@ DEFAULTS: dict = {
     "deal_risk": True,                  # hämta annonssidan för varje fynd och visa kopierisken i fyndet
     "daily_summary_hour": 20,           # "Dagens 5 bästa fynd" efter den här timmen (svensk tid); false = av
     "summary_topic": "⭐ Dagens bästa",
-    "weekly_report": True,              # veckorapport på söndagar, i samma ämne som dagens bästa
+    "weekly_report": True,
+    "info_topics": True,                # flikarna "👋 Välkommen" och "📖 Start här", som boten skriver och låser              # veckorapport på söndagar, i samma ämne som dagens bästa
 }
 
 
@@ -802,6 +804,43 @@ class TelegramNotifier:
                 return  # Telegram svarar inte (nytt försök nästa varv), eller gruppen saknar Ämnen
         if self.store:
             self._remove_old_topics(set(topics))
+
+    def post_info(self, pages: dict[str, str]) -> None:
+        """Skriver flikarnas infotext (en gång, fäst och låst). Ändras texten redigeras inlägget."""
+        if not self.store or not self._forum:
+            return
+        chat = str(self.chat_id)
+        for topic, html in pages.items():
+            thread = self._thread(chat, topic)
+            if not thread:
+                continue
+            key = f"info:{chat}:{topic}"
+            digest = hashlib.sha1(html.encode("utf-8")).hexdigest()[:12]
+            saved = (self.store.get_setting(key) or "").split(":")
+            if len(saved) == 2 and saved[1] == digest:
+                continue  # redan skickad, oförändrad
+            body = {"text": html[:4096], "parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
+            if len(saved) == 2 and saved[0].isdigit():
+                try:
+                    http_post_json(f"{self.api}/editMessageText", {"chat_id": chat, "message_id": int(saved[0]), **body})
+                    self.store.set_setting(key, f"{saved[0]}:{digest}")
+                    continue
+                except NotifyError as e:
+                    if "not modified" in e.description.lower():
+                        self.store.set_setting(key, f"{saved[0]}:{digest}")
+                        continue
+                    # inlägget har tagits bort – skicka ett nytt
+            sent = self._post("sendMessage", {**body, "message_thread_id": thread, "disable_notification": True}, chat)
+            if not sent.get("message_id"):
+                continue
+            self.store.set_setting(key, f"{sent['message_id']}:{digest}")
+            for method, payload in (("pinChatMessage", {"message_id": sent["message_id"], "disable_notification": True}),
+                                    ("closeForumTopic", {"message_thread_id": thread})):  # bara boten skriver här
+                try:
+                    http_post_json(f"{self.api}/{method}", {"chat_id": chat, **payload})
+                except (NotifyError, OSError, ValueError, http.client.HTTPException):
+                    pass
+            log.info("Telegram: skrev infotexten i ämnet '%s'.", topic)
 
     def _remove_old_topics(self, keep: set[str]) -> None:
         prefix = f"topic:{self.chat_id}:"
@@ -2001,6 +2040,81 @@ def _thread_of(msg: dict) -> int | None:
     return int(thread) if isinstance(thread, int) else None
 
 
+def welcome_text() -> str:
+    return "\n".join([
+        "<b>👋 Välkommen till gruppen!</b>",
+        "",
+        "Här dyker underprisade märkesplagg från Vinted upp automatiskt, dygnet runt – plagg som går att "
+        "köpa billigt och sälja vidare med vinst.",
+        "",
+        "<b>Kom igång på en minut</b>",
+        "1. Läs fliken <b>📖 Start här</b> – där står hur allt fungerar.",
+        "2. Tryck på botens namn och sedan <b>Starta</b>, så att den får skicka fynd privat till dig.",
+        "3. Skriv t.ex. <code>/bevaka Moncler L</code> för att få dina märken direkt i mobilen.",
+        "4. Stäng av ljudet för flikarna du inte bryr dig om (håll inne på fliken → Stäng av).",
+        "",
+        "<b>Var schysst</b>",
+        "• Tryck <b>🙋 Jag tar den</b> innan du köper, så att inte två köper samma plagg.",
+        "• Köp alltid med <b>Köp nu</b> på Vinted – aldrig Swish eller annan betalning utanför Vinted.",
+        "• Kolla äktheten innan du köper (knappen 🔍 Legitcheck).",
+        "",
+        "Lycka till med fynden! 🔥",
+    ])
+
+
+def guide_text(searches: list[Search], cfg: dict) -> str:
+    """Hur gruppen fungerar, med märkeslistan direkt ur config.yaml (uppdateras när den ändras)."""
+    shown = {"Abercrombie": "Abercrombie & Fitch", "Nudie": "Nudie Jeans", "Burberrys": None, "AMI": None}
+    topics: dict[str, dict[str, bool]] = {}  # flik -> märke -> söks extra ofta
+    for search in searches:
+        brands = topics.setdefault(topic_for(search.tags, cfg) or "Övrigt", {})
+        for rule in search.all_rules():
+            name = shown.get(rule.label, rule.label)
+            if name and rule.label != "övriga märken":
+                brands[name] = brands.get(name, False) or search.hot
+    brands = [f"<b>{escape(t, quote=False)}:</b> " + escape(", ".join(n + (" ⚡" if hot else "") for n, hot in
+                                                                 sorted(b.items(), key=lambda x: fold(x[0]))), quote=False)
+              for t, b in topics.items()]
+    summary = cfg.get("summary_topic") or "⭐ Dagens bästa"
+    quiet = cfg.get("quiet_hours")
+    lines = [
+        "<b>📖 Så fungerar gruppen</b>",
+        "",
+        "<b>Flikarna</b>",
+        "Fynden sorteras i flikar efter typ av plagg. I <b>" + escape(summary) + "</b> kommer dygnets fem bästa "
+        "fynd varje kväll kl. " + str(cfg.get("daily_summary_hour") or 20) + ", och på söndagar en veckorapport.",
+        "",
+        "<b>Ett fynd</b>",
+        "🔥 Märke – pris (≈ +vinst). Vinsten är en uppskattning: vad plagget brukar säljas för, minus pris, "
+        "köparskydd och frakt.",
+        "🟢🟡🔴 Kopierisk utifrån säljarens omdömen, bilderna och orden i annonsen.",
+        "⚠️ Misstänkt lågt pris – märket kopieras ofta, kolla extra noga.",
+        "📉 Prissänkt – annonsen har blivit billigare.",
+        "",
+        "<b>Knapparna</b>",
+        "• <b>Öppna på Vinted</b> – gå direkt till annonsen.",
+        "• <b>🔍 Legitcheck</b> – riskbedömning och vad du ska be säljaren fota.",
+        "• <b>🙋 Jag tar den</b> – visar att du köper. Tryck igen om du ångrar dig.",
+        "När plagget är sålt ändras inlägget till <b>❌ SÅLD inom …</b>.",
+        "",
+        "<b>Kommandon</b>",
+        "<code>/bevaka Moncler L</code> – få Moncler i storlek L privat (flera: M/L, bara märke går också)",
+        "<code>/bevakningar</code> – visa dina bevakningar",
+        "<code>/sluta 2</code> – ta bort bevakning nr 2 (eller <code>/sluta alla</code>)",
+        "<code>/legit</code> + länk – kolla vilken Vinted-annons som helst",
+        "Kommandona fungerar här i gruppen och privat hos boten.",
+    ]
+    if isinstance(quiet, list) and len(quiet) == 2:
+        lines += ["", f"🌙 Mellan kl. {quiet[0]} och {quiet[1]} kommer fynden utan ljud."]
+    lines += ["", "<b>Märken som bevakas</b> (⚡ = söks extra ofta)"] + brands + [
+        "",
+        "<b>Bra att veta</b>",
+        "• Du har 2 dagar efter leveransen att trycka <i>Jag har ett problem</i> på Vinted om något inte stämmer.",
+        "• Bästa fynden säljs på minuter – var snabb, men kolla alltid äktheten först.",
+    ]
+    return "\n".join(lines)
+
+
 def legit_help() -> Message:
     return Message("🔍 Legitcheck", [
         "Skriv /legit följt av en länk till en Vinted-annons, eller svara på ett fynd med /legit.",
@@ -2521,6 +2635,7 @@ class Bot:
                 if not self.dry_run:
                     try:
                         notifier.prepare_topics(self.topic_names())
+                        notifier.post_info(self.info_pages())
                     except Exception as e:  # ämnena får aldrig stoppa sökningarna
                         log.warning("Telegram: kunde inte förbereda ämnena (%s) – fortsätter", type(e).__name__)
         try:
@@ -2576,11 +2691,17 @@ class Bot:
         return total
 
     def topic_names(self) -> list[str]:
-        names = [str(name) for name in self.cfg.get("topics") or {}]
+        names = list(self.info_pages()) + [str(name) for name in self.cfg.get("topics") or {}]
         hour = self.cfg.get("daily_summary_hour")
         if hour is not None and hour is not False and self.cfg.get("summary_topic"):
             names.append(str(self.cfg["summary_topic"]))
         return names
+
+    def info_pages(self) -> dict[str, str]:
+        """Text (HTML) för flikarna "👋 Välkommen" och "📖 Start här"."""
+        if not self.cfg.get("info_topics", True):
+            return {}
+        return {"👋 Välkommen": welcome_text(), "📖 Start här": guide_text(self.searches, self.cfg)}
 
     def check_sold(self, max_checks: int = 8, deadline: float | None = None) -> int:
         """Kollar äldre fynd igen och ändrar dem till "❌ SÅLD" i Telegram när plaggen är sålda."""

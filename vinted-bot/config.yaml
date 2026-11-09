@@ -151,6 +151,11 @@ summary_topic: "⭐ Dagens bästa"
 # såldes, bästa märket). false = ingen veckorapport.
 weekly_report: true
 
+# Flikarna "👋 Välkommen" och "📖 Start här": boten skriver en välkomsttext och en guide
+# till gruppen (med märkeslistan), fäster dem och låser flikarna. Texterna uppdateras av sig
+# själva när märkena ändras. false = inga infoflikar.
+info_topics: true
+
 # Tyst natt: fynd mellan de här timmarna (svensk tid) kommer utan ljud. false = av.
 quiet_hours: [23, 7]
 
