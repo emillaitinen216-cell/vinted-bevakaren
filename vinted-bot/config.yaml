@@ -266,13 +266,15 @@ searches:
     catalog: [257]
     tags: [Jeans, Bootcut]
     max_price: 300
-    min_profit: 240
+    min_profit: 200
     brands:
       True Religion: 800
       Evisu: 900
+      Rock Revival: 650
       "Levi's": 450
       Nudie: 450
       Dondup: 480
+      Wrangler: 430         # bootcut-Wrangler är dyrare än vanliga Wrangler (~470 kr i median)
       Diesel: 400
       Replay: 350
       Lee: 350
@@ -280,6 +282,68 @@ searches:
     premium_keywords:
       "517": 100            # Levi's 517 bootcut
       zatiny: 200
+
+  # Fler bootcut- och vintagejeans (mätta på vinted.se i november 2026, herrjeans 257).
+  - name: Levi's 517 bootcut
+    query: levis 517
+    catalog: [257]
+    tags: [Jeans, Bootcut]
+    max_price: 260
+    min_profit: 150
+    brands:
+      "Levi's": 450         # median ~500 kr
+    premium_keywords:
+      orange tab: 150
+      made in usa: 150
+      vintage: 50
+
+  - name: Flare jeans
+    query: flare jeans
+    catalog: [257]
+    tags: [Jeans, Bootcut]
+    max_price: 300
+    min_profit: 180
+    brands:
+      True Religion: 700    # median ~750 kr
+      Diesel: 500
+      Lee: 400              # median ~460 kr
+      "Levi's": {resale: 300, max_price: 150}   # median ~330 kr
+      Lee Cooper: ignorera
+
+  - name: Vintage jeans
+    query: vintage
+    catalog: [257]
+    tags: [Jeans]
+    max_price: 300
+    min_profit: 150
+    brands:
+      True Religion: 700
+      Rock Revival: 650     # median ~730 kr
+      "Levi's": 340         # median ~380 kr
+      Lee: 340
+      Diesel: {resale: 300, max_price: 150}
+      Wrangler: {resale: 220, max_price: 100}   # median ~170–200 kr
+      Lee Cooper: ignorera
+    premium_keywords:
+      big e: 400            # Levi's från före 1971
+      501xx: 300
+      orange tab: 150
+      made in usa: 150
+      selvedge: 150
+      selvage: 150
+
+  - name: Y2K jeans
+    query: y2k jeans
+    catalog: [257]
+    tags: [Jeans]
+    max_price: 300
+    min_profit: 150
+    brands:
+      Evisu: 800
+      True Religion: 700
+      Rock Revival: 650     # median ~720 kr
+      Diesel: {resale: 300, max_price: 150}
+      "Levi's": {resale: 280, max_price: 130}
 
   # ---------------- Fältjackor ----------------
 

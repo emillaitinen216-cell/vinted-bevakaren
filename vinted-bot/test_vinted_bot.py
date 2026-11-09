@@ -1993,6 +1993,15 @@ class MoreGroupFeatureTests(unittest.TestCase):
         self.assertEqual(bot.run_search(search), 0)            # borttagen
         self.assertEqual(client.listing_calls, [2, 3, 4])
 
+    def test_womens_listing_is_not_sent(self):
+        notifier, search = FakeNotifier(), make_search(self.cfg)
+        client = InspectingClient(listing_page(item_id=2, catalog=(1904, 4, 10)))   # Dam › …
+        bot = vb.Bot(self.cfg, [search], client, self.store, [notifier])
+        self.assertEqual(self.first_run_then(bot, client, search, [item(id=2)]), 0)
+        client.page = listing_page(item_id=3)                                         # Herr (5) › …
+        client.pages = {1: [item(id=3), item(id=2), item(id=1)]}
+        self.assertEqual(bot.run_search(search), 1)
+
     def test_vinted_trouble_still_sends_the_deal(self):
         notifier, search = FakeNotifier(), make_search(self.cfg)
         client = InspectingClient(error=vb.Blocked("HTTP 429"))

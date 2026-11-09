@@ -95,7 +95,8 @@ DEFAULTS: dict = {
         "Byxor & shorts": ["Byxor", "Shorts", "Mjukisbyxor"],
     },
     "quiet_hours": [23, 7],             # fynd kommer utan ljud mellan de här timmarna (svensk tid); false = av
-    "deal_risk": True,                  # hämta annonssidan för varje fynd och visa kopierisken i fyndet
+    "deal_risk": True,
+    "mens_catalog": 5,                  # Vinteds kategori "Herr": annonser utanför den skickas inte; false = av                  # hämta annonssidan för varje fynd och visa kopierisken i fyndet
     "daily_summary_hour": 20,           # "Dagens 5 bästa fynd" efter den här timmen (svensk tid); false = av
     "summary_topic": "⭐ Dagens bästa",
     "weekly_report": True,
@@ -2000,6 +2001,12 @@ def _listing_signals(listing: Listing) -> tuple[list[tuple[int, str]], list[str]
     return bad, good, fake
 
 
+def is_mens(listing: "Listing", cfg: dict) -> bool:
+    """Ligger annonsen under Vinteds kategori Herr? (Okänd kategori räknas som ja.)"""
+    root = cfg.get("mens_catalog")
+    return not root or not listing.catalog_ids or int(root) in listing.catalog_ids
+
+
 def risk_line(listing: Listing) -> str:
     """Kort kopierisk för ett fynd: säljaren, orden i annonsen och bilderna. Priset räknas inte här –
     att det är lågt vet man redan, och märkets kopiegräns har en egen varning i fyndet."""
@@ -2979,6 +2986,9 @@ class Bot:
                 self._inspect_off = True  # Vinted spärrar – inga fler annonssidor det här varvet
             log.debug("Kunde inte hämta annonsen för kopierisken (%s)", type(e).__name__)
             return None, False
+        if listing and not is_mens(listing, self.cfg):
+            log.debug("  – %s: inte ett herrplagg (kategori %s)", deal.item.title[:50], listing.catalog_ids[:2])
+            return listing, True  # dam- eller barnplagg som hamnat i sökningen – skicka inte
         return listing, bool(listing and listing.sold)
 
     def notify(self, deal: Deal, topic: str | None = None) -> None:
