@@ -156,6 +156,9 @@ weekly_report: true
 # själva när märkena ändras. false = inga infoflikar.
 info_topics: true
 
+# Öppen flik där medlemmarna kan prata, fråga om äkthet och sälja till varandra. false = ingen.
+chat_topic: "💬 Snack"
+
 # Tyst natt: fynd mellan de här timmarna (svensk tid) kommer utan ljud. false = av.
 quiet_hours: [23, 7]
 

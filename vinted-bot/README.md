@@ -261,6 +261,20 @@ välkomsttext och en guide till gruppens funktioner, kommandon och märken. Text
 fästs och uppdateras av sig själva när märkena i `config.yaml` ändras.
 `info_topics: false` stänger av dem.
 
+**💬 Snack.** En öppen flik där alla kan skriva (`chat_topic` i `config.yaml`).
+
+**💰 /pris, 📝 Säljtext och 🏆 topplistan.**
+
+- `/pris Moncler Maya` visar vad liknande plagg kostar på Vinted just nu: median,
+  prisspann och ett förslag på pris för att sälja snabbt.
+- Knappen *📝 Säljtext* under ett fynd skickar en färdig annonstext med prisförslag
+  privat till den som trycker.
+- `/sald 1200` som svar på ett fynd (eller `/sald 1200 400`: såld för, köpt för) räknar
+  ut vinsten. `/topplista` visar månadens vinsttopplista, och den 1:a varje månad
+  skickas förra månadens topplista.
+- Märken vars fynd brukar säljas inom en timme får raden *⚡ Moncler-fynd brukar säljas
+  inom 15 min – var snabb*.
+
 **🙋 Jag tar den.** Under varje fynd i gruppen finns en knapp. Den som trycker
 först får sitt namn på knappen (*"🙋 Emil tar den"*), så att inte två köper
 samma plagg. Trycker samma person igen släpps fyndet. Trycker någon annan får

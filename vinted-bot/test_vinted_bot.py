@@ -1512,11 +1512,12 @@ class GroupFeatureTests(unittest.TestCase):
         bot.run_cycle()
         bot.run_cycle()
         self.assertEqual([p["name"] for p in api.made("createForumTopic")],
-                         ["👋 Välkommen", "📖 Start här", "Dunjackor", "Jackor", "Jeans", "Tröjor & skjortor",
-                          "Byxor & shorts", "⭐ Dagens bästa"])
+                         ["👋 Välkommen", "📖 Start här", "💬 Snack", "Dunjackor", "Jackor", "Jeans",
+                          "Tröjor & skjortor", "Byxor & shorts", "⭐ Dagens bästa"])
         self.assertEqual(len(api.made("getChat")), 2)            # en gång per varv
         self.assertEqual(api.made("sendPhoto"), [])
-        self.assertEqual([p["message_thread_id"] for p in api.made("sendMessage")], [500, 501])  # infoflikarna, en gång
+        self.assertEqual([p["message_thread_id"] for p in api.made("sendMessage")], [500, 501, 502])  # infoflikarna, en gång
+        self.assertEqual([p["message_thread_id"] for p in api.made("closeForumTopic")], [500, 501])  # Snack är öppen
 
     def test_info_topics_are_written_once_pinned_locked_and_updated(self):
         api = FakeBotApi()
@@ -1675,7 +1676,7 @@ class GroupFeatureTests(unittest.TestCase):
         api = FakeBotApi()
         self.notifier(api).send(self.deal_msg())
         keyboard = api.made("sendPhoto")[0]["reply_markup"]["inline_keyboard"]
-        self.assertEqual([b.get("callback_data") for row in keyboard for b in row], [None, "legit:42", "claim:42"])
+        self.assertEqual([b.get("callback_data") for row in keyboard for b in row], [None, "legit:42", "claim:42", "sell:42"])
         api2 = FakeBotApi()
         patcher = mock.patch.object(vb, "http_post_json", side_effect=api2)
         patcher.start()
@@ -2255,6 +2256,124 @@ class MoreGroupFeatureTests(unittest.TestCase):
         self.assertNotIn("claim:5", dm_buttons)                 # "Jag tar den" bara i gruppen
         self.assertEqual([w[1] for w in self.store.watches()], [7, 9])   # 8 har stoppat boten, 10 har lämnat
         self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM sent WHERE item_id = 5").fetchone()[0], 2)
+
+
+class CatalogClient(FakeListingClient):
+    def __init__(self, items=(), body=None):
+        super().__init__(body)
+        self.items, self.fetched = list(items), []
+
+    def fetch(self, search, page=1, price_cap=True, retries=None):
+        self.fetched.append((search.query, page))
+        return self.items if page == 1 else []
+
+
+class ResaleToolsTests(unittest.TestCase):
+    """/pris, /sald, /topplista, knappen Säljtext och "säljs snabbt"."""
+    GROUP = "-1001"
+
+    def setUp(self):
+        self.cfg = make_cfg()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "bot.db"
+        self.store = vb.Store(self.db)
+        self.addCleanup(self.store.db.close)
+        self.sent = []
+
+        def post(url, payload, timeout=20):
+            self.sent.append(payload)
+            if str(payload.get("chat_id")) == "99":
+                raise vb.NotifyError(403, json.dumps({"description": "Forbidden: bot can't initiate conversation"}))
+            return {"ok": True, "result": {"message_id": 1}}
+
+        patcher = mock.patch.object(vb, "http_post_json", side_effect=post)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.api = MembersTelegram(members=(7,))
+
+    def listener(self, client):
+        listener = vb.LegitListener(TOKEN, self.db, self.cfg, legit_searches(self.cfg), LEGIT_TIPS,
+                                    fixed_chat=self.GROUP, api=self.api, client=client)
+        listener.username = "fyndbot"
+        return listener
+
+    def say(self, listener, update_id, text, user=7, reply_to=None):
+        msg = tg_msg(update_id, int(self.GROUP), text, user, 100, chat_type="supergroup")
+        msg["message"]["from"]["first_name"] = "Emil"
+        if reply_to:
+            msg["message"]["reply_to_message"] = reply_to
+        self.api.updates = [[msg]]
+        listener.last_command.clear()
+        listener.poll(self.store)
+        return self.sent[-1]["text"]
+
+    def log_deal(self, item_id=42, brand="Moncler", total=950, resale=2500):
+        it = item(id=item_id, brand=brand, title=f"{brand} Maya", price=total - 50, total=total, url=f"{BASE}/items/{item_id}")
+        self.store.log_deal(vb.Deal(it, "Moncler", resale=resale, cost=total + 49, profit=resale - total - 49, roi=1))
+
+    def test_price_check(self):
+        items = [item(id=i, brand="Moncler", title="Moncler Maya dunjacka", price=p)
+                 for i, p in enumerate((1000, 2000, 3000, 4000, 5000, 6000), 1)] + [item(id=99, brand="Nike", title="x", price=1)]
+        client = CatalogClient(items)
+        text = self.say(self.listener(client), 1, "/pris Moncler Maya")
+        self.assertIn('&quot;Moncler Maya&quot; just nu på Vinted: 6 annonser', text)
+        self.assertIn("Median 3 500 kr", text)
+        self.assertEqual(client.fetched, [("Moncler Maya", 1)])
+        self.assertIn("För få annonser".lower(), self.say(self.listener(CatalogClient(items[:2])), 2, "/pris Moncler Maya").lower())
+
+    def test_report_sale_and_leaderboard(self):
+        self.log_deal()
+        listener = self.listener(CatalogClient())
+        deal_post = {"caption": "🔥", "reply_markup": {"inline_keyboard": [[{"text": "Öppna på Vinted", "url": f"{BASE}/items/42-x"}]]}}
+        text = self.say(listener, 1, "/sald 2000", reply_to=deal_post)
+        self.assertIn("Snyggt, Emil! +1 001 kr på Moncler.", text)          # 2000 − (950 + 49)
+        self.assertIn("plats 1 i /topplista", text)
+        self.say(listener, 2, "/sålt 900 300", user=8)                        # utan fynd: såld för, köpt för
+        board = self.say(listener, 3, "/topplista")
+        self.assertIn("🥇 Emil – +1 001 kr (1 sålda)", board)
+        self.assertIn("🥈 Emil – +600 kr (1 sålda)", board)
+        self.assertIn("Svara på fyndet med /sald", self.say(listener, 4, "/sald"))
+
+    def test_sell_text_button_sends_privately(self):
+        self.log_deal()
+        listener = self.listener(CatalogClient(body=listing_page(42, title="Moncler Maya dunjacka")))
+        for user, expect in ((7, "Skickade säljtexten privat"), (99, "Tryck Starta hos @fyndbot först")):
+            query = {"update_id": user, "callback_query": {"id": "q", "from": {"id": user}, "data": "sell:42",
+                     "message": {"message_id": 9, "chat": {"id": int(self.GROUP), "type": "supergroup"}}}}
+            self.api.updates = [[query]]
+            listener.last_by_user.clear()
+            listener.poll(self.store)
+            self.assertIn(expect, self.api.calls[-1][2]["text"])
+        dm = next(p for p in self.sent if p.get("chat_id") == "7")
+        self.assertIn("Moncler Maya dunjacka – stl L", dm["text"])
+        self.assertIn("Prisförslag: 2 500 kr", dm["text"])
+
+    def test_sell_speed_line(self):
+        notifier = FakeNotifier()
+        bot = vb.Bot(self.cfg, [], FakeClient(), self.store, [notifier])
+        for item_id, after in ((1, 300), (2, 900), (3, 1500)):
+            self.log_deal(item_id)
+            self.store.record_sent(self.GROUP, item_id, item_id, "photo", "x", "u")
+            self.store.db.execute("UPDATE sent SET status = 'SÅLD', sold_after = ? WHERE item_id = ?", (after, item_id))
+        bot.notify(vb.Deal(item(id=5, brand="Moncler"), "Moncler", resale=2500, cost=999, profit=1500, roi=1))
+        self.assertIn("⚡ Moncler-fynd brukar säljas inom 15 min – var snabb", notifier.sent[0].lines)
+        bot.notify(vb.Deal(item(id=6, brand="Nudie Jeans"), "Test", resale=400, cost=200, profit=200, roi=1))
+        self.assertFalse(any(line.startswith("⚡") for line in notifier.sent[1].lines))
+
+    def test_monthly_leaderboard_on_the_first(self):
+        notifier = FakeNotifier()
+        bot = vb.Bot(self.cfg, [], FakeClient(), self.store, [notifier])
+        october = datetime(2026, 10, 15, 12, tzinfo=vb.STOCKHOLM)
+        self.store.record_sale(7, "Emil", 1, 1500, 500)
+        self.store.db.execute("UPDATE sales SET ts = ?", (int(october.timestamp()),))
+        first = datetime(2026, 11, 1, 20, 30, tzinfo=vb.STOCKHOLM)
+        self.assertFalse(bot.monthly_leaderboard(first.replace(hour=12)))
+        self.assertTrue(bot.monthly_leaderboard(first))
+        self.assertFalse(bot.monthly_leaderboard(first.replace(hour=22)))
+        (msg,) = notifier.sent
+        self.assertEqual(msg.title, "🏆 Förra månadens topplista")
+        self.assertIn("🥇 Emil – +1 000 kr (1 sålda)", msg.lines)
 
 
 if __name__ == "__main__":
