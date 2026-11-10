@@ -1,46 +1,58 @@
 # Vakten: startar boten igen om kedjan har stannat.
 #
 # Varje körning av Vinted-bevakaren startar själv nästa. Någon enstaka gång kommer en
-# körning aldrig igång hos GitHub (den misslyckas direkt, utan att något steg körs), och
-# då startas ingen ny. Vakten körs varje gång en körning är klar: har den misslyckats och
-# ingen ny körning väntar, startar vakten en.
+# körning aldrig igång hos GitHub, och då startas ingen ny. Vakten tittar var 30:e
+# minut: körs ingen bevakare och väntar ingen på att starta, startar vakten en.
+# (Den körs på schema, eftersom GitHub inte startar vakten när en körning som boten
+# själv startat blir klar.)
 name: Vinted-vakten
 
 on:
-  workflow_run:
-    workflows: [Vinted-bevakaren]
-    types: [completed]
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
   actions: write # för att se körningarna och starta en ny
 
+concurrency:
+  group: vinted-vakten
+  cancel-in-progress: false
+
 jobs:
   starta-om:
-    if: ${{ github.event.workflow_run.conclusion == 'failure' && !github.event.repository.private }}
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
-      - name: Starta boten igen om ingen körning väntar
+      - name: Starta boten igen om ingen körning är igång
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          # En körning som misslyckats på vanligt sätt har redan startat nästa – vänta in den.
-          sleep 45
-          state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/vinted-bot.yml" --jq .state || echo okänt)
-          if [ "$state" != "active" ] && [ "$state" != "okänt" ]; then
+          active() {
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow vinted-bot.yml --limit 10 \
+              --json status --jq '[.[] | select(.status != "completed")] | length'
+          }
+          state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/vinted-bot.yml" --jq .state) || {
+            echo "Kunde inte läsa läget – försöker igen nästa halvtimme."; exit 0; }
+          if [ "$state" != "active" ]; then
             echo "Workflowet är avstängt ($state) – startar ingen ny körning."
             exit 0
           fi
-          waiting=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow vinted-bot.yml --limit 5 \
-                      --json status --jq '[.[] | select(.status != "completed")] | length' || echo 0)
-          if [ "$waiting" -gt 0 ]; then
-            echo "Nästa körning är redan på väg – kedjan lever."
-            exit 0
-          fi
+          # Kolla två gånger med en minuts mellanrum, så att ett byte mellan två
+          # körningar inte ser ut som att kedjan har stannat.
+          for check in 1 2; do
+            n=$(active) || { echo "Kunde inte läsa körningarna – försöker igen nästa halvtimme."; exit 0; }
+            if [ "$n" -gt 0 ]; then
+              echo "Boten är igång – kedjan lever."
+              exit 0
+            fi
+            if [ "$check" = 1 ]; then sleep 60; fi
+          done
+          echo "Ingen körning är igång – startar boten igen."
           for try in $(seq 1 6); do
-            gh workflow run vinted-bot.yml --repo "$GITHUB_REPOSITORY" --ref "${BRANCH:-main}" && exit 0
+            gh workflow run vinted-bot.yml --repo "$GITHUB_REPOSITORY" --ref "${GITHUB_REF_NAME:-main}" && exit 0
             sleep 30
           done
           echo "::error::Kunde inte starta boten igen. Tryck Run workflow under fliken Actions."

@@ -301,7 +301,7 @@ med `/legit` eller `/sald` får stå kvar (`clean_deal_topics`).
 **🚨 Larm till ägaren.** Du får ett privat meddelande när boten har stått still i mer än
 40 minuter, när Vinted spärrat den tre varv i rad (och när det släpper), och när inga
 fynd kommit på 12 timmar (`owner_alarms`). I molnet startar dessutom *Vinted-vakten*
-(`.github/workflows/vinted-vakt.yml`) boten igen om en körning aldrig kom igång.
+(`.github/workflows/vinted-vakt.yml`) boten igen om ingen körning är igång – den tittar var 30:e minut.
 
 **🙋 Jag tar den.** Under varje fynd i gruppen finns en knapp. Den som trycker
 först får sitt namn på knappen (*"🙋 Emil tar den"*), så att inte två köper
