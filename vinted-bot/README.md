@@ -293,6 +293,16 @@ meddelande) skickar därför texten och nämner alla medlemmar boten sett: alla 
 skrivit, gått med eller tryckt på en knapp sedan funktionen lades till. Vill du nå
 precis alla: fäst meddelandet och välj *Meddela alla medlemmar*.
 
+**🧹 Rena fynd-flikar.** Det medlemmar skriver i en fynd-flik tas bort, så att flikarna
+bara innehåller fynd. Kommandon besvaras i General i stället, och den som chattat får en
+hänvisning i Snack (högst en gång i timmen). Admins berörs inte, och svar på ett fynd
+med `/legit` eller `/sald` får stå kvar (`clean_deal_topics`).
+
+**🚨 Larm till ägaren.** Du får ett privat meddelande när boten har stått still i mer än
+40 minuter, när Vinted spärrat den tre varv i rad (och när det släpper), och när inga
+fynd kommit på 12 timmar (`owner_alarms`). I molnet startar dessutom *Vinted-vakten*
+(`.github/workflows/vinted-vakt.yml`) boten igen om en körning aldrig kom igång.
+
 **🙋 Jag tar den.** Under varje fynd i gruppen finns en knapp. Den som trycker
 först får sitt namn på knappen (*"🙋 Emil tar den"*), så att inte två köper
 samma plagg. Trycker samma person igen släpps fyndet. Trycker någon annan får

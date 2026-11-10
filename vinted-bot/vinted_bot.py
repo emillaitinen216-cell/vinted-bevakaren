@@ -103,7 +103,9 @@ DEFAULTS: dict = {
     "info_topics": True,
     "chat_topic": "💬 Snack",
     "stats_topic": "📊 Statistik",
-    "remove_unwatched_deals": True,     # ta bort inlägg med märken som tagits bort ur config.yaml      # låst flik med vad som säljs bäst bland fynden; false = ingen
+    "remove_unwatched_deals": True,     # ta bort inlägg med märken som tagits bort ur config.yaml
+    "owner_alarms": True,               # privat larm till ägaren när boten stått still, spärras eller inte hittar fynd
+    "clean_deal_topics": True,          # fynd-flikarna är bara för fynd: annat tas bort och hänvisas till General/Snack
     "auto_tune": True,                  # boten justerar varje sökings vinstgräns efter hur fynden säljs             # öppen flik där medlemmarna kan prata; false = ingen                # flikarna "👋 Välkommen" och "📖 Start här", som boten skriver och låser              # veckorapport på söndagar, i samma ämne som dagens bästa
 }
 
@@ -931,7 +933,9 @@ class TelegramNotifier:
                                  {"text": "📝 Säljtext", "callback_data": f"sell:{item_id}"}])
                 elif msg.item_id:
                     rows.append([{"text": "📝 Säljtext", "callback_data": f"sell:{item_id}"}])
-        payload: dict = {"parse_mode": "HTML", "reply_markup": {"inline_keyboard": rows}}
+        payload: dict = {"parse_mode": "HTML"}
+        if rows:
+            payload["reply_markup"] = {"inline_keyboard": rows}
         if self.quiet():
             payload["disable_notification"] = True
         topic_key = None
@@ -2353,6 +2357,7 @@ def guide_text(searches: list[Search], cfg: dict) -> str:
         "🟢🟡🔴 Kopierisk utifrån säljarens omdömen, bilderna och orden i annonsen.",
         "⚠️ Misstänkt lågt pris – märket kopieras ofta, kolla extra noga.",
         "⚡ Märket brukar säljas snabbt – slå till direkt om du vill ha det.",
+        "Fynd-flikarna är bara för fynd: annat som skrivs där tas bort. Prata i General eller 💬 Snack.",
         "📉 Prissänkt – annonsen har blivit billigare.",
         "",
         "<b>Knapparna</b>",
@@ -2443,6 +2448,8 @@ class LegitListener:
         self.errors = 0                          # fel i rad från Telegram – väntar längre och längre
         self.members: dict = {}                  # person -> (är med i gruppen, när det kollades)
         self.last_command: dict = {}             # person -> senaste /bevaka m.fl. (spamskydd)
+        self.admins: dict = {}                   # person -> (är admin i gruppen, när det kollades)
+        self.clean_warned = False
 
     def run(self, until: float | None = None) -> None:
         """Lyssnar tills time.monotonic() når until (None = för alltid)."""
@@ -2587,8 +2594,14 @@ class LegitListener:
             return
         command = {"/sålt": "/sald", "/salt": "/sald", "/sålde": "/sald", "/följ": "/folj", "/följer": "/foljer",
                    "/avfölj": "/avfolj"}.get(command, command)
-        if command not in ("/legit", "/hjalp", "/help", "/bevaka", "/bevakningar", "/sluta", "/start",
-                           "/pris", "/sald", "/topplista", "/folj", "/foljer", "/avfolj"):
+        known = ("/legit", "/hjalp", "/help", "/bevaka", "/bevakningar", "/sluta", "/start",
+                 "/pris", "/sald", "/topplista", "/folj", "/foljer", "/avfolj")
+        if not private and chat in allowed and self.in_deal_topic(msg, chat, store) and command not in ("/legit", "/sald"):
+            # Fynd-flikarna är bara för fynd (svar på ett fynd med /legit eller /sald hör hemma där).
+            if not self.remove_from_deal_topic(msg, chat, store, is_command=command in known):
+                return
+            msg = {k: v for k, v in msg.items() if k not in ("message_thread_id", "is_topic_message")}  # svara i General
+        if command not in known:
             return
         if command == "/start" and (not private or chat in allowed):
             return  # ägarens /start sköts av discover_telegram_chat
@@ -2642,6 +2655,62 @@ class LegitListener:
             self.reply(chat, msg.get("message_id"), legit_help(), thread)
             return
         self.check(item_id, chat, msg.get("message_id"), (msg.get("from") or {}).get("id"), thread)
+
+    def is_admin(self, chat: str, user_id) -> bool:
+        known, when = self.admins.get(user_id, (False, -1e9))
+        if time.monotonic() - when < 600:
+            return known
+        try:
+            info = self.api(self.token, "getChatMember", {"chat_id": chat, "user_id": user_id}, timeout=10)
+            known = isinstance(info, dict) and info.get("status") in ("creator", "administrator")
+        except TelegramError:
+            known = True  # osäkert: ta hellre inte bort något
+        self.admins[user_id] = (known, time.monotonic())
+        return known
+
+    def in_deal_topic(self, msg: dict, chat: str, store: "Store") -> bool:
+        """Skrev en vanlig medlem något i en av fynd-flikarna?"""
+        thread, user = _thread_of(msg), msg.get("from") or {}
+        if not self.cfg.get("clean_deal_topics", True) or not thread or user.get("is_bot") or msg.get("sender_chat"):
+            return False
+        if not any(k in msg for k in ("text", "caption", "photo", "video", "sticker", "animation", "document", "voice")):
+            return False  # händelser som "gick med i gruppen"
+        names = [str(n) for n in self.cfg.get("topics") or {}]
+        if self.cfg.get("summary_topic"):
+            names.append(str(self.cfg["summary_topic"]))
+        threads = {int(v) for n in names if (v := store.get_setting(f"topic:{chat}:{n}")) and v.isdigit()}
+        return thread in threads and not self.is_admin(chat, user.get("id"))
+
+    def remove_from_deal_topic(self, msg: dict, chat: str, store: "Store", is_command: bool) -> bool:
+        """Tar bort meddelandet ur fynd-fliken. True = det var ett kommando som ska besvaras (i General)."""
+        api = f"https://api.telegram.org/bot{self.token}"
+        try:
+            http_post_json(f"{api}/deleteMessage", {"chat_id": chat, "message_id": msg.get("message_id")})
+        except (NotifyError, OSError) as e:
+            if not self.clean_warned:
+                self.clean_warned = True
+                log.warning("Kunde inte ta bort ett meddelande i en fynd-flik (%s) – boten behöver rätten "
+                            "'Ta bort meddelanden'.", e.description if isinstance(e, NotifyError) else type(e).__name__)
+            return False
+        if is_command:
+            return True
+        user = msg.get("from") or {}
+        key = f"hint:{user.get('id')}"
+        if time.time() - float(store.get_setting(key) or 0) < 3600:
+            return False  # nyss tillsagd – tjata inte
+        store.set_setting(key, str(int(time.time())))
+        name = escape(str(user.get("first_name") or "Hej")[:20], quote=False)
+        snack = store.get_setting(f"topic:{chat}:{self.cfg.get('chat_topic')}") if self.cfg.get("chat_topic") else None
+        payload = {"chat_id": chat, "parse_mode": "HTML", "text":
+                   f'<a href="tg://user?id={user.get("id")}">{name}</a>: fynd-flikarna är bara för fynd, så jag tog bort '
+                   "ditt meddelande där. Skriv här i stället – kommandon som /pris i General, och bevakningar privat till mig."}
+        if snack and snack.isdigit():
+            payload["message_thread_id"] = int(snack)
+        try:
+            http_post_json(f"{api}/sendMessage", payload)
+        except (NotifyError, OSError):
+            pass
+        return False
 
     def tag_everyone(self, msg: dict, chat: str, store: "Store", text: str) -> None:
         """/alla text – bara för gruppens admins: skickar texten och nämner alla medlemmar boten känner till."""
@@ -3017,6 +3086,7 @@ class Bot:
         self.block_pauses = 2
         self._cycle_started, self._inspect_off = time.monotonic(), False  # för kopierisk-kollen
         self.spare_end: float | None = None  # i molnet: sök toppmärkena igen fram till dess (monotonic)
+        self.cycle_blocked: bool | None = None  # spärrade Vinted det senaste varvet?
 
     def _pause(self) -> None:
         low, high = self.cfg["delay_between_searches"]
@@ -3179,6 +3249,16 @@ class Bot:
                 time.sleep(self.block_cooldown)
 
     def run_cycle(self) -> int:
+        """Ett varv, och kom ihåg om Vinted spärrade det (för larmen till ägaren)."""
+        try:
+            total = self._run_cycle()
+        except Blocked:
+            self.cycle_blocked = True
+            raise
+        self.cycle_blocked = False
+        return total
+
+    def _run_cycle(self) -> int:
         """Ett varv genom sökningarna. Med tidsgräns avbryts varvet när tiden är slut, och nästa
         varv börjar där det här slutade – så att varje körning i molnet ryms inom en debiterad minut."""
         started = time.monotonic()  # tidsgränsen räknar även in fynd som skickas om
@@ -3634,10 +3714,69 @@ class Bot:
             self.store.follow_checked(item_id, price, gone)
         return told
 
+    ALARM_GAP = 40 * 60        # boten har stått still så här länge
+    ALARM_BLOCKED = 3          # varv i rad som Vinted spärrat
+    ALARM_NO_DEALS = 12 * 3600
+
+    def owner_alarms(self, now: float | None = None) -> list[str]:
+        """Privat meddelande till ägaren när något är fel: boten har stått still, Vinted spärrar den
+        flera varv i rad, eller inga fynd har kommit på länge. Körs efter varje varv."""
+        tg = next((n for n in self.notifiers if isinstance(n, TelegramNotifier)), None)
+        if not self.cfg.get("owner_alarms", True) or self.dry_run or not self.store or not tg:
+            return []
+        owner = tg.fallback_chat or (None if str(tg.chat_id).startswith("-") else str(tg.chat_id))
+        now = time.time() if now is None else now
+        get, put = self.store.get_setting, self.store.set_setting
+        clock = lambda ts: datetime.fromtimestamp(ts, STOCKHOLM).strftime("%H:%M")  # noqa: E731
+        alarms: list[tuple[str, list[str]]] = []
+
+        last_run = float(get("health:last_run") or 0)
+        put("health:last_run", str(int(now)))
+        if last_run and now - last_run > self.ALARM_GAP:
+            alarms.append(("🚨 Boten stod still", [
+                f"Ingen körning mellan kl. {clock(last_run)} och {clock(now)} ({within(now - last_run)[5:]}).",
+                "Den är igång igen nu. Fynd som kom under tiden kan ha missats."]))
+
+        if self.cycle_blocked is not None:
+            blocked = int(get("health:blocked") or 0)
+            if self.cycle_blocked:
+                blocked += 1
+                if blocked == self.ALARM_BLOCKED:
+                    alarms.append(("🚨 Vinted spärrar boten", [
+                        f"Vinted har nekat boten {blocked} varv i rad, så inga nya fynd kommer just nu.",
+                        "Den försöker igen av sig själv – du får besked när det släpper."]))
+            else:
+                if blocked >= self.ALARM_BLOCKED:
+                    alarms.append(("✅ Vinted släpper igenom boten igen", ["Sökningarna fungerar som vanligt."]))
+                blocked = 0
+            put("health:blocked", str(blocked))
+
+        last_deal = self.store.db.execute("SELECT MAX(ts) FROM deals").fetchone()[0]
+        if last_deal and now - last_deal > self.ALARM_NO_DEALS and now - float(get("health:no_deals") or 0) > 86400:
+            put("health:no_deals", str(int(now)))
+            alarms.append(("🚨 Inga fynd på länge", [
+                f"Senaste fyndet kom för {within(now - last_deal)[5:]} sedan.",
+                "Sökningarna körs, men inget går igenom filtren – vinstgränserna kan vara för höga."]))
+
+        repo = os.environ.get("GITHUB_REPOSITORY")
+        url = f"https://github.com/{repo}/actions" if repo else f"https://www.{self.cfg['domain']}/"
+        sent = []
+        for title, lines in alarms if owner else []:
+            try:
+                tg.send_private(owner, Message(title, lines, url, buttons=[[
+                    {"text": "Öppna körningarna" if repo else "Öppna Vinted", "url": url}]]))
+                sent.append(title)
+            except Exception as e:
+                log.warning("Kunde inte skicka larmet till ägaren (%s)", getattr(e, "status", type(e).__name__))
+        if sent:
+            log.info("Skickade %d larm till ägaren.", len(sent))
+        return sent
+
     def try_daily_summary(self) -> None:
         """Dagens bästa och (på söndagar) veckorapporten – fel här får aldrig stoppa boten."""
         for report, what in ((self.daily_summary, "dagens bästa fynd"), (self.weekly_report, "veckorapporten"),
-                             (self.monthly_leaderboard, "månadens topplista"), (self.auto_tune, "självjusteringen")):
+                             (self.monthly_leaderboard, "månadens topplista"), (self.auto_tune, "självjusteringen"),
+                             (self.owner_alarms, "larmen till ägaren")):
             try:
                 report()
             except Exception:

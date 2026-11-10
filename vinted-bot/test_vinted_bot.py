@@ -2651,5 +2651,109 @@ class TagEveryoneTests(unittest.TestCase):
         self.assertEqual([m[0] for m in self.store.members(self.GROUP)], [9])
 
 
+class OwnerAlarmTests(unittest.TestCase):
+    def setUp(self):
+        self.store = vb.Store(":memory:")
+        self.addCleanup(self.store.db.close)
+        self.sent = []
+        patcher = mock.patch.object(vb, "http_post_json", side_effect=lambda url, payload, timeout=20: self.sent.append(payload) or
+                                    {"ok": True, "result": {"message_id": 1}})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tg = vb.TelegramNotifier(TOKEN, "-1001", fallback_chat="7", store=self.store)
+        self.bot = vb.Bot(make_cfg(), [], FakeClient(), self.store, [self.tg])
+        self.now = 1_800_000_000.0
+
+    def test_gap_between_runs(self):
+        self.assertEqual(self.bot.owner_alarms(self.now), [])
+        self.assertEqual(self.bot.owner_alarms(self.now + 600), [])
+        self.assertEqual(self.bot.owner_alarms(self.now + 600 + 3 * 3600), ["🚨 Boten stod still"])
+        self.assertEqual(self.sent[-1]["chat_id"], "7")                       # privat till ägaren, inte gruppen
+        self.assertIn("(3 tim)", self.sent[-1]["text"])
+
+    def test_blocked_three_cycles_in_a_row_and_recovery(self):
+        self.bot.cycle_blocked = True
+        results = [self.bot.owner_alarms(self.now + 600 * i) for i in range(4)]
+        self.assertEqual(results, [[], [], ["🚨 Vinted spärrar boten"], []])   # en gång, inte varje varv
+        self.bot.cycle_blocked = False
+        self.assertEqual(self.bot.owner_alarms(self.now + 3000), ["✅ Vinted släpper igenom boten igen"])
+        self.assertEqual(self.bot.owner_alarms(self.now + 3600), [])
+
+    def test_no_deals_for_a_long_time_once_a_day(self):
+        self.store.log_deal(vb.Deal(item(id=5), "Test", resale=400, cost=200, profit=200, roi=1))
+        self.store.db.execute("UPDATE deals SET ts = ?", (int(self.now) - 13 * 3600,))
+        self.assertEqual(self.bot.owner_alarms(self.now), ["🚨 Inga fynd på länge"])
+        self.assertEqual(self.bot.owner_alarms(self.now + 600), [])
+        self.assertIn("13 tim", self.sent[-1]["text"])
+
+    def test_can_be_turned_off(self):
+        bot = vb.Bot(make_cfg(owner_alarms=False), [], FakeClient(), self.store, [self.tg])
+        bot.owner_alarms(self.now)
+        self.assertEqual(bot.owner_alarms(self.now + 5 * 3600), [])
+
+
+class CleanDealTopicTests(unittest.TestCase):
+    GROUP = "-1001"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "bot.db"
+        self.store = vb.Store(self.db)
+        self.addCleanup(self.store.db.close)
+        self.store.set_setting(f"topic:{self.GROUP}:Jeans", "500")
+        self.store.set_setting(f"topic:{self.GROUP}:💬 Snack", "600")
+        self.sent = []
+
+        def post(url, payload, timeout=20):
+            self.sent.append((url.rsplit("/", 1)[1], payload))
+            return {"ok": True, "result": True}
+
+        patcher = mock.patch.object(vb, "http_post_json", side_effect=post)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        class Telegram(MembersTelegram):
+            def __call__(api, token, method, params=None, timeout=35):
+                if method == "getChatMember":
+                    return {"status": "creator" if params["user_id"] == 1 else "member"}
+                return super().__call__(token, method, params, timeout)
+
+        self.api = Telegram()
+        self.items = [item(id=i, brand="Moncler", title="Moncler Maya", price=1000 * i) for i in range(1, 7)]
+        self.listener = vb.LegitListener(TOKEN, self.db, make_cfg(), [], LEGIT_TIPS, fixed_chat=self.GROUP,
+                                         api=self.api, client=CatalogClient(self.items))
+
+    def say(self, update_id, text, user=2, thread=500, **extra):
+        msg = tg_msg(update_id, int(self.GROUP), text, user, 100, chat_type="supergroup")
+        msg["message"].update(message_id=update_id, message_thread_id=thread, is_topic_message=True, **extra)
+        msg["message"]["from"]["first_name"] = "Kalle"
+        self.api.updates = [[msg]]
+        self.listener.last_command.clear()
+        self.listener.poll(self.store)
+
+    def test_chatter_in_a_deal_topic_is_removed_with_one_hint(self):
+        self.say(1, "någon som vet om den är äkta?")
+        self.say(2, "hallå?")
+        self.assertEqual([m for m, _ in self.sent], ["deleteMessage", "sendMessage", "deleteMessage"])   # en tillsägelse
+        hint = self.sent[1][1]
+        self.assertEqual(hint["message_thread_id"], 600)                    # i Snack
+        self.assertIn('<a href="tg://user?id=2">Kalle</a>: fynd-flikarna är bara för fynd', hint["text"])
+
+    def test_commands_are_answered_in_general_instead(self):
+        self.say(1, "/pris Moncler Maya")
+        (m1, deleted), (m2, answer) = self.sent
+        self.assertEqual((m1, deleted["message_id"], m2), ("deleteMessage", 1, "sendMessage"))
+        self.assertNotIn("message_thread_id", answer)                       # svaret hamnar i General
+        self.assertIn("Median", answer["text"])
+
+    def test_admins_snack_and_replies_to_deals_are_left_alone(self):
+        self.say(1, "Ny regel i gruppen", user=1)                            # admin
+        self.say(2, "tjena", thread=600)                                     # Snack
+        self.say(3, "/sald")                                                 # svar på fynd hör hemma i fliken
+        self.assertEqual([m for m, _ in self.sent], ["sendMessage"])        # bara svaret på /sald
+        self.assertEqual(self.sent[0][1]["message_thread_id"], 500)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -167,6 +167,15 @@ stats_topic: "📊 Statistik"
 # Telegram låter bara boten ta bort inlägg som är högst 48 timmar gamla. false = behåll dem.
 remove_unwatched_deals: true
 
+# Privat larm till dig (ägaren) när boten har stått still i mer än 40 minuter, när Vinted
+# spärrat den tre varv i rad, eller när inga fynd kommit på 12 timmar. false = inga larm.
+owner_alarms: true
+
+# Fynd-flikarna är bara för fynd: det medlemmar skriver där tas bort (admins undantagna, och
+# svar på ett fynd med /legit eller /sald). Kommandon besvaras i General i stället, och den som
+# chattat får en vänlig hänvisning i Snack. Kräver att boten får ta bort meddelanden. false = av.
+clean_deal_topics: true
+
 # Tyst natt: fynd mellan de här timmarna (svensk tid) kommer utan ljud. false = av.
 quiet_hours: [23, 7]
 
