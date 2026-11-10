@@ -501,7 +501,7 @@ searches:
     brands:
       J.Lindeberg: 950      # median ~1 060 kr, undre kvartil ~500 kr; ~10 nya annonser per dygn
 
-  - name: Colmar
+  - name: Colmar dunjackor
     query: colmar
     catalog: [1206]
     tags: [Dunjacka]

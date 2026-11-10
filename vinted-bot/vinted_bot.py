@@ -2241,7 +2241,8 @@ def welcome_text() -> str:
         "<b>Kom igång på en minut</b>",
         "1. Läs fliken <b>📖 Start här</b> – där står hur allt fungerar.",
         "2. Tryck på botens namn och sedan <b>Starta</b>, så att den får skicka fynd privat till dig.",
-        "3. Skriv t.ex. <code>/bevaka Moncler L</code> för att få dina märken direkt i mobilen.",
+        "3. Skriv t.ex. <code>/bevaka Moncler L</code> i fliken <b>General</b> för att få dina märken direkt i mobilen. "
+        "Alla kommandon skrivs i General (eller privat till boten).",
         "4. Stäng av ljudet för flikarna du inte bryr dig om (håll inne på fliken → Stäng av).",
         "",
         "<b>Var schysst</b>",
@@ -2358,7 +2359,7 @@ def guide_text(searches: list[Search], cfg: dict) -> str:
         "<code>/följ</code> + länk – följ en annons: du får ett privat meddelande när priset sänks eller när den "
         "blir såld (eller svara på ett fynd med <code>/följ</code>)",
         "<code>/följer</code> – visa annonserna du följer · <code>/avfölj 2</code> – sluta följa nr 2",
-        "Kommandona fungerar här i gruppen och privat hos boten.",
+        "Skriv kommandona i fliken <b>General</b> – inte i fynd-flikarna – eller privat till boten.",
     ]
     if isinstance(quiet, list) and len(quiet) == 2:
         lines += ["", f"🌙 Mellan kl. {quiet[0]} och {quiet[1]} kommer fynden utan ljud."]
