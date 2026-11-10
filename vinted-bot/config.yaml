@@ -163,6 +163,10 @@ chat_topic: "💬 Snack"
 # och med störst vinst (senaste 30 dagarna). false = ingen statistikflik.
 stats_topic: "📊 Statistik"
 
+# Öppen flik där man skriver ett plagg (t.ex. Moncler Maya) och får vad det kostar på Vinted
+# just nu – samma svar som /pris, utan kommando. false = ingen prischeck-flik.
+price_topic: "💰 Prischeck"
+
 # Tar bort inlägg (i gruppen och privat) med fynd i märken som tagits bort härifrån.
 # Telegram låter bara boten ta bort inlägg som är högst 48 timmar gamla. false = behåll dem.
 remove_unwatched_deals: true

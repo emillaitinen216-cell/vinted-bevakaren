@@ -263,6 +263,11 @@ fästs och uppdateras av sig själva när märkena i `config.yaml` ändras.
 
 **💬 Snack.** En öppen flik där alla kan skriva (`chat_topic` i `config.yaml`).
 
+**💰 Prischeck.** En öppen flik där man bara skriver plagget, t.ex. *Moncler Maya*, och
+får vad det kostar på Vinted just nu: median, vanligt prisintervall och ett pris för att
+sälja snabbt (samma som `/pris`). Svar till andra medlemmar i fliken lämnas ifred
+(`price_topic`).
+
 **💰 /pris, 📝 Säljtext och 🏆 topplistan.**
 
 - `/pris Moncler Maya` visar vad liknande plagg kostar på Vinted just nu: median,

@@ -103,6 +103,7 @@ DEFAULTS: dict = {
     "info_topics": True,
     "chat_topic": "💬 Snack",
     "stats_topic": "📊 Statistik",
+    "price_topic": "💰 Prischeck",         # flik där man skriver ett plagg och får vad det kostar på Vinted
     "remove_unwatched_deals": True,     # ta bort inlägg med märken som tagits bort ur config.yaml
     "owner_alarms": True,               # privat larm till ägaren när boten stått still, spärras eller inte hittar fynd
     "join_requests": True,              # ansökningslänk: den som ansöker skickar skärmdump på betalningen, ägaren släpper in
@@ -2271,6 +2272,22 @@ def chat_text() -> str:
     ])
 
 
+def price_text() -> str:
+    return "\n".join([
+        "<b>💰 Prischeck</b>",
+        "",
+        "Skriv märke och modell här, så svarar boten vad det kostar på Vinted just nu – median, vanligt "
+        "prisintervall och vad du bör sätta för att sälja snabbt.",
+        "",
+        "<b>Exempel</b>",
+        "<code>Moncler Maya</code>",
+        "<code>Stone Island tröja</code>",
+        "<code>Nudie Grim Tim</code>",
+        "",
+        "Tips: färre ord ger fler annonser att jämföra med. Inget kommando behövs här – skriv bara plagget.",
+    ])
+
+
 def welcome_text() -> str:
     return "\n".join([
         "<b>👋 Välkommen till gruppen!</b>",
@@ -2397,7 +2414,9 @@ def guide_text(searches: list[Search], cfg: dict) -> str:
         "",
         "<b>Övriga kommandon – skriv i fliken General</b>",
         "<code>/legit</code> + länk – kolla vilken Vinted-annons som helst",
-        "<code>/pris Moncler Maya</code> – vad det kostar på Vinted just nu",
+        "<code>/pris Moncler Maya</code> – vad det kostar på Vinted just nu" + (
+            f" (eller skriv bara plagget i fliken <b>{escape(str(cfg['price_topic']), quote=False)}</b>)"
+            if cfg.get("price_topic") else ""),
         "<code>/sald 1200</code> – svara på fyndet när du sålt det vidare (eller <code>/sald 1200 400</code>: "
         "såld för, köpt för)",
         "<code>/topplista</code> – månadens vinsttopplista (den 1:a varje månad kommer förra månadens)",
@@ -2641,6 +2660,12 @@ class LegitListener:
             if not self.remove_from_deal_topic(msg, chat, store, is_command=command in known):
                 return
             msg = {k: v for k, v in msg.items() if k not in ("message_thread_id", "is_topic_message")}  # svara i General
+        if not command and not private and chat in allowed and self.in_price_topic(msg, chat, store):
+            now = time.monotonic()
+            if now - self.last_command.get(user_id, -1e9) >= 3:  # skydd mot spam
+                self.last_command[user_id] = now
+                self.price_check(text, chat, msg.get("message_id"), user_id, _thread_of(msg))
+            return
         if command not in known:
             return
         if command == "/start" and (not private or chat in allowed):
@@ -2901,6 +2926,17 @@ class LegitListener:
             names.append(str(self.cfg["summary_topic"]))
         threads = {int(v) for n in names if (v := store.get_setting(f"topic:{chat}:{n}")) and v.isdigit()}
         return thread in threads and not self.is_admin(chat, user.get("id"))
+
+    def in_price_topic(self, msg: dict, chat: str, store: "Store") -> bool:
+        """Ett vanligt textmeddelande i fliken 💰 Prischeck (inte ett svar till någon annan)?"""
+        name, thread = self.cfg.get("price_topic"), _thread_of(msg)
+        if not name or not thread or not str(msg.get("text") or "").strip() or (msg.get("from") or {}).get("is_bot"):
+            return False
+        reply = msg.get("reply_to_message") or {}
+        if reply and "forum_topic_created" not in reply and not (reply.get("from") or {}).get("is_bot"):
+            return False  # svar till en annan medlem – ett samtal, ingen fråga till boten
+        saved = store.get_setting(f"topic:{chat}:{name}") or ""
+        return saved.isdigit() and int(saved) == thread
 
     def remove_from_deal_topic(self, msg: dict, chat: str, store: "Store", is_command: bool) -> bool:
         """Tar bort meddelandet ur fynd-fliken. True = det var ett kommando som ska besvaras (i General)."""
@@ -3631,6 +3667,8 @@ class Bot:
             pages[str(chat)] = chat_text()
         if (stats := self.cfg.get("stats_topic")) and self.store:
             pages[str(stats)] = self.stats_page()
+        if price := self.cfg.get("price_topic"):
+            pages[str(price)] = price_text()
         return pages
 
     def stats_page(self, now: datetime | None = None) -> str:

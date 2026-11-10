@@ -1512,12 +1512,12 @@ class GroupFeatureTests(unittest.TestCase):
         bot.run_cycle()
         bot.run_cycle()
         self.assertEqual([p["name"] for p in api.made("createForumTopic")],
-                         ["👋 Välkommen", "📖 Start här", "💬 Snack", "📊 Statistik", "Dunjackor", "Jackor", "Jeans",
+                         ["👋 Välkommen", "📖 Start här", "💬 Snack", "📊 Statistik", "💰 Prischeck", "Dunjackor", "Jackor", "Jeans",
                           "Tröjor & skjortor", "Byxor & shorts", "⭐ Dagens bästa"])
         self.assertEqual(len(api.made("getChat")), 2)            # en gång per varv
         self.assertEqual(api.made("sendPhoto"), [])
-        self.assertEqual([p["message_thread_id"] for p in api.made("sendMessage")], [500, 501, 502, 503])  # en gång
-        self.assertEqual([p["message_thread_id"] for p in api.made("closeForumTopic")], [500, 501, 503])  # Snack är öppen
+        self.assertEqual([p["message_thread_id"] for p in api.made("sendMessage")], [500, 501, 502, 503, 504])  # en gång
+        self.assertEqual([p["message_thread_id"] for p in api.made("closeForumTopic")], [500, 501, 503])  # Snack och Prischeck är öppna
 
     def test_info_topics_are_written_once_pinned_locked_and_updated(self):
         api = FakeBotApi()
@@ -2746,6 +2746,17 @@ class CleanDealTopicTests(unittest.TestCase):
         self.assertEqual((m1, deleted["message_id"], m2), ("deleteMessage", 1, "sendMessage"))
         self.assertNotIn("message_thread_id", answer)                       # svaret hamnar i General
         self.assertIn("Median", answer["text"])
+
+    def test_price_topic_answers_plain_text(self):
+        self.store.set_setting(f"topic:{self.GROUP}:💰 Prischeck", "700")
+        self.say(1, "Moncler Maya", thread=700)
+        ((method, answer),) = self.sent
+        self.assertEqual((method, answer["message_thread_id"]), ("sendMessage", 700))
+        self.assertIn("Median", answer["text"])
+        self.sent.clear()
+        self.say(2, "snygg!", thread=700, reply_to_message={"message_id": 5, "from": {"id": 3, "is_bot": False}})
+        self.say(3, "Moncler Maya", thread=600)                              # Snack: ingen prischeck
+        self.assertEqual(self.sent, [])
 
     def test_admins_snack_and_replies_to_deals_are_left_alone(self):
         self.say(1, "Ny regel i gruppen", user=1)                            # admin
