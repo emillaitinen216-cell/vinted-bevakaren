@@ -1512,12 +1512,12 @@ class GroupFeatureTests(unittest.TestCase):
         bot.run_cycle()
         bot.run_cycle()
         self.assertEqual([p["name"] for p in api.made("createForumTopic")],
-                         ["👋 Välkommen", "📖 Start här", "💬 Snack", "📊 Statistik", "💰 Prischeck", "Dunjackor", "Jackor", "Jeans",
+                         ["👋 Välkommen", "📖 Start här", "💬 Snack", "📊 Statistik", "💰 Prischeck", "📈 Resell Guide", "Dunjackor", "Jackor", "Jeans",
                           "Tröjor & skjortor", "Byxor & shorts", "⭐ Dagens bästa"])
         self.assertEqual(len(api.made("getChat")), 2)            # en gång per varv
         self.assertEqual(api.made("sendPhoto"), [])
-        self.assertEqual([p["message_thread_id"] for p in api.made("sendMessage")], [500, 501, 502, 503, 504])  # en gång
-        self.assertEqual([p["message_thread_id"] for p in api.made("closeForumTopic")], [500, 501, 503])  # Snack och Prischeck är öppna
+        self.assertEqual([p["message_thread_id"] for p in api.made("sendMessage")], [500, 501, 502, 503, 504, 505])  # en gång
+        self.assertEqual([p["message_thread_id"] for p in api.made("closeForumTopic")], [500, 501, 503, 505])  # Snack och Prischeck är öppna
 
     def test_info_topics_are_written_once_pinned_locked_and_updated(self):
         api = FakeBotApi()

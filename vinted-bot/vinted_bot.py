@@ -103,7 +103,8 @@ DEFAULTS: dict = {
     "info_topics": True,
     "chat_topic": "💬 Snack",
     "stats_topic": "📊 Statistik",
-    "price_topic": "💰 Prischeck",         # flik där man skriver ett plagg och får vad det kostar på Vinted
+    "price_topic": "💰 Prischeck",
+    "resell_topic": "📈 Resell Guide",      # låst flik: bevaka vilka plagg som helst + hur man resellar bäst         # flik där man skriver ett plagg och får vad det kostar på Vinted
     "remove_unwatched_deals": True,     # ta bort inlägg med märken som tagits bort ur config.yaml
     "owner_alarms": True,               # privat larm till ägaren när boten stått still, spärras eller inte hittar fynd
     "join_requests": True,              # ansökningslänk: den som ansöker skickar skärmdump på betalningen, ägaren släpper in
@@ -2288,6 +2289,52 @@ def price_text() -> str:
     ])
 
 
+def resell_text() -> str:
+    return "\n".join([
+        "<b>📈 Resell Guide</b>",
+        "",
+        "<b>🔔 Bevaka vilka plagg som helst</b>",
+        "Du är inte begränsad till märkena i gruppen. Skriv <b>privat till boten</b> (tryck på botens namn → "
+        "<b>Starta</b> första gången):",
+        "<code>/bevaka Moncler L</code> – ett märke i din storlek (flera: <code>M/L</code>)",
+        "<code>/bevaka Rick Owens max 1500</code> – vilket märke eller plagg som helst, upp till ett maxpris",
+        "<code>/bevaka Salomon XT-6</code> – utan maxpris får du annonser som ligger klart under vanligt pris",
+        "<code>/bevakningar</code> – dina bevakningar · <code>/sluta 2</code> – ta bort nr 2",
+        "Fynden kommer bara till dig, aldrig i gruppen. Du kan ha 10 bevakningar.",
+        "",
+        "<b>🛒 Köp rätt</b>",
+        "• Var snabb – de bästa fynden säljs på minuter. Slå på ljud för flikarna du gillar.",
+        "• Kolla äktheten först: tryck <b>🔍 Legitcheck</b> och be säljaren om bilder på etiketter och tvättlapp.",
+        "• Räkna med frakt och köparskydd – vinsten i fynden är redan räknad efter dem.",
+        "• Storlek M och L säljs snabbast. XS och XXL tar ofta längre tid.",
+        "• Kolla <b>📊 Statistik</b> för vilka märken som går snabbast, och <b>💰 Prischeck</b> innan du köper "
+        "något som inte kommit i gruppen.",
+        "• Lägg ett bud 10–15 % under – många säljare tackar ja, särskilt på äldre annonser.",
+        "",
+        "<b>📸 Sälj bra</b>",
+        "• Bilder i dagsljus mot en ljus vägg: fram, bak, etiketter, tvättlapp, detaljer och eventuella fel.",
+        "• Titel: märke + modell + plagg + storlek, t.ex. <i>Moncler Maya dunjacka herr L</i>.",
+        "• Skriv mått (axlar, bröst, längd) och ärligt skick – det ger färre frågor och returer.",
+        "• Sätt pris med <b>💰 Prischeck</b>: strax under medianen säljer snabbt. Knappen <b>📝 Säljtext</b> under "
+        "varje fynd ger en färdig annonstext.",
+        "• Har det inte sålts på en vecka: sänk 5–10 % – de som sparat annonsen får ett meddelande.",
+        "• Söndag kväll är det flest köpare på Vinted. Skicka paketet inom ett dygn efter köpet.",
+        "",
+        "<b>🍂 Tänk på säsongen</b>",
+        "Dunjackor och tjocka jackor säljs dyrast oktober–januari – köp gärna på våren och sommaren när de är "
+        "billiga. Jeans, tröjor och skjortor säljs hela året.",
+        "",
+        "<b>⚠️ Undvik</b>",
+        "• Betala aldrig utanför Vinted (Swish, länkar i chatten) – då försvinner köparskyddet.",
+        "• Fynd med 🔴 kopierisk eller ⚠️ misstänkt lågt pris utan bra bilder på etiketterna.",
+        "• Tryck <i>Jag har ett problem</i> på Vinted inom 2 dagar efter leveransen om något inte stämmer.",
+        "",
+        "<b>💸 Bra att veta om skatt</b>",
+        "Vinted rapporterar till Skatteverket den som säljer minst 30 saker eller för minst 2 000 euro per år. "
+        "Säljer du regelbundet med vinst kan det räknas som näringsverksamhet – läs mer hos Skatteverket.",
+    ])
+
+
 def welcome_text() -> str:
     return "\n".join([
         "<b>👋 Välkommen till gruppen!</b>",
@@ -3530,7 +3577,8 @@ class Bot:
                         self.remove_unwatched_deals(notifier)
                         notifier.prepare_topics(self.topic_names())
                         notifier.post_info(self.info_pages(), locked={"👋 Välkommen", "📖 Start här",
-                                                                      str(self.cfg.get("stats_topic") or "")})
+                                                                      str(self.cfg.get("stats_topic") or ""),
+                                                                      str(self.cfg.get("resell_topic") or "")})
                     except Exception as e:  # ämnena får aldrig stoppa sökningarna
                         log.warning("Telegram: kunde inte förbereda ämnena (%s) – fortsätter", type(e).__name__)
         try:
@@ -3669,6 +3717,8 @@ class Bot:
             pages[str(stats)] = self.stats_page()
         if price := self.cfg.get("price_topic"):
             pages[str(price)] = price_text()
+        if resell := self.cfg.get("resell_topic"):
+            pages[str(resell)] = resell_text()
         return pages
 
     def stats_page(self, now: datetime | None = None) -> str:

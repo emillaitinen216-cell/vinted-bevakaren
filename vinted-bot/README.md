@@ -268,6 +268,10 @@ får vad det kostar på Vinted just nu: median, vanligt prisintervall och ett pr
 sälja snabbt (samma som `/pris`). Svar till andra medlemmar i fliken lämnas ifred
 (`price_topic`).
 
+**📈 Resell Guide.** En låst flik med hur man bevakar vilka plagg som helst privat och
+hur man resellar bäst: köpa rätt, sälja bra, säsonger, vad man ska undvika och kort om
+skatt (`resell_topic`).
+
 **💰 /pris, 📝 Säljtext och 🏆 topplistan.**
 
 - `/pris Moncler Maya` visar vad liknande plagg kostar på Vinted just nu: median,

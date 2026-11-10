@@ -167,6 +167,10 @@ stats_topic: "📊 Statistik"
 # just nu – samma svar som /pris, utan kommando. false = ingen prischeck-flik.
 price_topic: "💰 Prischeck"
 
+# Låst flik med hur man bevakar vilka plagg som helst och tips för att köpa och sälja vidare
+# (köp rätt, sälj bra, säsong, vad man ska undvika, skatt). false = ingen guide-flik.
+resell_topic: "📈 Resell Guide"
+
 # Tar bort inlägg (i gruppen och privat) med fynd i märken som tagits bort härifrån.
 # Telegram låter bara boten ta bort inlägg som är högst 48 timmar gamla. false = behåll dem.
 remove_unwatched_deals: true
