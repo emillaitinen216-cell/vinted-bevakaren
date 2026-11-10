@@ -2599,5 +2599,57 @@ class SpareTimeTests(unittest.TestCase):
         self.assertEqual(bot.use_spare_time(), 0)                        # lokalt, utan --lyssna: ingen extra tid
 
 
+class TagEveryoneTests(unittest.TestCase):
+    GROUP = "-1001"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "bot.db"
+        self.store = vb.Store(self.db)
+        self.addCleanup(self.store.db.close)
+        self.sent = []
+        patcher = mock.patch.object(vb, "http_post_json", side_effect=lambda url, payload, timeout=20: self.sent.append(payload) or {})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        class AdminTelegram(MembersTelegram):
+            def __call__(api, token, method, params=None, timeout=35):
+                if method == "getChatMember":
+                    return {"status": "creator" if params["user_id"] == 1 else "member"}
+                return super().__call__(token, method, params, timeout)
+
+        self.api = AdminTelegram()
+        self.listener = vb.LegitListener(TOKEN, self.db, make_cfg(), [], LEGIT_TIPS, fixed_chat=self.GROUP,
+                                         api=self.api, client=FakeListingClient())
+
+    def say(self, update_id, text, user, name):
+        msg = tg_msg(update_id, int(self.GROUP), text, user, 100, chat_type="supergroup")
+        msg["message"]["from"]["first_name"] = name
+        self.api.updates = [[msg]]
+        self.listener.poll(self.store)
+
+    def test_admin_tags_everyone_the_bot_has_seen(self):
+        self.say(1, "hej", 2, "Kalle")
+        self.say(2, "tjena", 3, "Lisa <3")
+        self.say(3, "/alla Nya fynd ikväll!", 4, "Olle")            # inte admin: inget händer
+        self.assertEqual(self.sent, [])
+        self.say(4, "/alla Nya fynd ikväll!", 1, "Emil")
+        (post,) = self.sent
+        self.assertTrue(post["text"].startswith("📣 Nya fynd ikväll!\n\n"))
+        self.assertIn('<a href="tg://user?id=2">Kalle</a>', post["text"])
+        self.assertIn('<a href="tg://user?id=3">Lisa &lt;3</a>', post["text"])
+        self.assertIn('tg://user?id=4', post["text"])                 # Olle har också skrivit
+        self.assertNotIn('tg://user?id=1"', post["text"])             # inte avsändaren själv
+
+    def test_members_who_leave_are_forgotten(self):
+        self.say(1, "hej", 2, "Kalle")
+        left = tg_msg(2, int(self.GROUP), "", 9, 100, chat_type="supergroup")
+        left["message"]["left_chat_member"] = {"id": 2, "first_name": "Kalle"}
+        self.api.updates = [[left]]
+        self.listener.poll(self.store)
+        self.assertEqual([m[0] for m in self.store.members(self.GROUP)], [9])
+
+
 if __name__ == "__main__":
     unittest.main()

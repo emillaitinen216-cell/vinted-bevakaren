@@ -1526,6 +1526,9 @@ class Store:
             -- Fynd som skickats till Telegram, så att de kan markeras "❌ SÅLD" när plagget sålts.
             -- Medlemmarnas egna bevakningar (/bevaka Moncler L): fynden skickas privat till dem.
             -- Medlemmarnas egna försäljningar (/sald 1200) – för månadens topplista.
+            -- Gruppens medlemmar som boten sett (skrivit, gått med, tryckt på en knapp) – för /alla.
+            CREATE TABLE IF NOT EXISTS members (
+                chat_id TEXT, user_id INTEGER, name TEXT, ts INTEGER, PRIMARY KEY (chat_id, user_id));
             CREATE TABLE IF NOT EXISTS sales (
                 user_id INTEGER, name TEXT, item_id INTEGER, sold REAL, bought REAL, profit REAL, ts INTEGER,
                 PRIMARY KEY (user_id, item_id));
@@ -1649,6 +1652,20 @@ class Store:
             "SELECT d.brand, d.title, d.price, MAX(d.profit), d.url, d.search FROM deals d "
             "WHERE d.ts >= ? AND NOT EXISTS (SELECT 1 FROM sent s WHERE s.item_id = d.item_id AND s.status IS NOT NULL) "
             "GROUP BY d.item_id ORDER BY MAX(d.profit) DESC LIMIT ?", (since, limit)).fetchall()
+
+    def remember_member(self, chat_id: str, user: dict) -> None:
+        if not isinstance(user, dict) or user.get("is_bot") or not isinstance(user.get("id"), int):
+            return
+        name = str(user.get("first_name") or user.get("username") or "Medlem")[:30]
+        self.db.execute("INSERT OR REPLACE INTO members VALUES (?, ?, ?, ?)", (chat_id, user["id"], name, int(time.time())))
+        self.db.commit()
+
+    def forget_member(self, chat_id: str, user_id) -> None:
+        self.db.execute("DELETE FROM members WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
+        self.db.commit()
+
+    def members(self, chat_id: str) -> list[tuple[int, str]]:
+        return self.db.execute("SELECT user_id, name FROM members WHERE chat_id = ? ORDER BY ts DESC", (chat_id,)).fetchall()
 
     def deal_info(self, item_id: int) -> tuple | None:
         """(märke, titel, pris, pris inkl. köparskydd, säljvärde) för ett fynd boten skickat."""
@@ -2530,6 +2547,8 @@ class LegitListener:
             msg = query.get("message") or {}
             chat = str((msg.get("chat") or {}).get("id", ""))
             data = str(query.get("data") or "")
+            if chat in allowed and chat.startswith("-"):
+                store.remember_member(chat, query.get("from"))
             if data.startswith("claim:") and chat in allowed:
                 self.claim(query, msg, chat, store)
                 return
@@ -2551,12 +2570,21 @@ class LegitListener:
         parts = text.split(maxsplit=1)
         command, _, addressee = (parts[0].lower().partition("@") if text.startswith("/") else ("", "", ""))
         chat = str((msg.get("chat") or {}).get("id", ""))
+        if chat in allowed and chat.startswith("-"):  # vilka som finns i gruppen, för /alla
+            store.remember_member(chat, msg.get("from"))
+            for joined in msg.get("new_chat_members") or []:
+                store.remember_member(chat, joined)
+            if isinstance(left := msg.get("left_chat_member"), dict):
+                store.forget_member(chat, left.get("id"))
         if addressee and self.username and addressee != self.username.lower():
             return  # kommandot gäller en annan bot i gruppen
         if command == "/help" and not addressee:
             return  # vanligt kommando för andra botar – svara bara på /help@dennabot
         private = (msg.get("chat") or {}).get("type") == "private"
         user_id = (msg.get("from") or {}).get("id")
+        if command in ("/alla", "/everyone", "/all") and chat in allowed and chat.startswith("-"):
+            self.tag_everyone(msg, chat, store, parts[1] if len(parts) > 1 else "")
+            return
         command = {"/sålt": "/sald", "/salt": "/sald", "/sålde": "/sald", "/följ": "/folj", "/följer": "/foljer",
                    "/avfölj": "/avfolj"}.get(command, command)
         if command not in ("/legit", "/hjalp", "/help", "/bevaka", "/bevakningar", "/sluta", "/start",
@@ -2614,6 +2642,38 @@ class LegitListener:
             self.reply(chat, msg.get("message_id"), legit_help(), thread)
             return
         self.check(item_id, chat, msg.get("message_id"), (msg.get("from") or {}).get("id"), thread)
+
+    def tag_everyone(self, msg: dict, chat: str, store: "Store", text: str) -> None:
+        """/alla text – bara för gruppens admins: skickar texten och nämner alla medlemmar boten känner till."""
+        user_id = (msg.get("from") or {}).get("id")
+        try:
+            info = self.api(self.token, "getChatMember", {"chat_id": chat, "user_id": user_id}, timeout=10)
+        except TelegramError:
+            return
+        if not isinstance(info, dict) or info.get("status") not in ("creator", "administrator"):
+            return  # bara admins får tagga alla
+        reply_to = msg.get("reply_to_message") or {}
+        text = text.strip() or str(reply_to.get("text") or reply_to.get("caption") or "").strip()
+        thread = _thread_of(msg)
+        if not text:
+            self.reply(chat, msg.get("message_id"), Message("📣 Tagga alla", [
+                "Skriv /alla och ditt meddelande, t.ex. /alla Nytt i gruppen ikväll!",
+                "Eller svara på ett meddelande med /alla."], "", buttons=[]), thread)
+            return
+        people = [(uid, name) for uid, name in store.members(chat) if uid != user_id]
+        mentions = [f'<a href="tg://user?id={uid}">{escape(name, quote=False)}</a>' for uid, name in people]
+        chunks = [mentions[i:i + 40] for i in range(0, len(mentions), 40)] or [[]]  # Telegram tar högst ~50 per meddelande
+        for n, chunk in enumerate(chunks):
+            body = (f"📣 {escape(text, quote=False)}\n\n" if n == 0 else "") + " ".join(chunk)
+            payload = {"chat_id": chat, "text": body[:4096], "parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
+            if thread:
+                payload["message_thread_id"] = thread
+            try:
+                http_post_json(f"https://api.telegram.org/bot{self.token}/sendMessage", payload)
+            except (NotifyError, OSError) as e:
+                log.warning("Kunde inte tagga alla (%s)", getattr(e, "status", type(e).__name__))
+                return
+        log.info("Taggade %d medlemmar", len(people))
 
     def _budget(self, user) -> bool:
         """Delad spärr för allt som anropar Vinted: högst 30 per 10 minuter, en per person och 5 s."""

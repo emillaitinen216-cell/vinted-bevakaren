@@ -287,6 +287,12 @@ sällan säljs inom ett dygn, och sänker den lite där allt säljs på minuter 
 gruppens fynd de senaste 30 dagarna som säljs snabbast, flest sålda, störst vinst per
 sålt fynd och vilka som oftast blir liggande (`stats_topic`).
 
+**📣 /alla (bara för admins).** Telegram har ingen @everyone, och botar får inte se
+gruppens medlemslista. `/alla Nya fynd ikväll!` (eller `/alla` som svar på ett
+meddelande) skickar därför texten och nämner alla medlemmar boten sett: alla som
+skrivit, gått med eller tryckt på en knapp sedan funktionen lades till. Vill du nå
+precis alla: fäst meddelandet och välj *Meddela alla medlemmar*.
+
 **🙋 Jag tar den.** Under varje fynd i gruppen finns en knapp. Den som trycker
 först får sitt namn på knappen (*"🙋 Emil tar den"*), så att inte två köper
 samma plagg. Trycker samma person igen släpps fyndet. Trycker någon annan får
