@@ -2241,8 +2241,8 @@ def welcome_text() -> str:
         "<b>Kom igång på en minut</b>",
         "1. Läs fliken <b>📖 Start här</b> – där står hur allt fungerar.",
         "2. Tryck på botens namn och sedan <b>Starta</b>, så att den får skicka fynd privat till dig.",
-        "3. Skriv t.ex. <code>/bevaka Moncler L</code> i fliken <b>General</b> för att få dina märken direkt i mobilen. "
-        "Alla kommandon skrivs i General (eller privat till boten).",
+        "3. Skriv t.ex. <code>/bevaka Moncler L</code> <b>privat till boten</b> för att få dina märken direkt i "
+        "mobilen. Övriga kommandon, som <code>/pris</code> och <code>/legit</code>, skrivs i fliken <b>General</b>.",
         "4. Stäng av ljudet för flikarna du inte bryr dig om (håll inne på fliken → Stäng av).",
         "",
         "<b>Var schysst</b>",
@@ -2345,21 +2345,21 @@ def guide_text(searches: list[Search], cfg: dict) -> str:
         "• <b>📝 Säljtext</b> – en färdig annonstext med prisförslag, skickad privat till dig.",
         "När plagget är sålt ändras inlägget till <b>❌ SÅLD inom …</b>.",
         "",
-        "<b>Kommandon</b>",
+        "<b>Bevakningar – skriv privat till boten</b>",
         "<code>/bevaka Moncler L</code> – få Moncler i storlek L privat (flera: M/L, bara märke går också)",
         "<code>/bevaka Rick Owens max 1500</code> – vilket märke som helst: finns det inte i gruppen söker boten "
         "efter det själv och skickar bara till dig (utan maxpris: annonser klart under vanligt pris)",
-        "<code>/bevakningar</code> – visa dina bevakningar",
-        "<code>/sluta 2</code> – ta bort bevakning nr 2 (eller <code>/sluta alla</code>)",
+        "<code>/bevakningar</code> – visa dina bevakningar · <code>/sluta 2</code> – ta bort nr 2 (eller "
+        "<code>/sluta alla</code>)",
+        "<code>/följ</code> + länk – följ en annons: du får besked när priset sänks eller när den blir såld",
+        "<code>/följer</code> – visa annonserna du följer · <code>/avfölj 2</code> – sluta följa nr 2",
+        "",
+        "<b>Övriga kommandon – skriv i fliken General</b>",
         "<code>/legit</code> + länk – kolla vilken Vinted-annons som helst",
         "<code>/pris Moncler Maya</code> – vad det kostar på Vinted just nu",
         "<code>/sald 1200</code> – svara på fyndet när du sålt det vidare (eller <code>/sald 1200 400</code>: "
         "såld för, köpt för)",
         "<code>/topplista</code> – månadens vinsttopplista (den 1:a varje månad kommer förra månadens)",
-        "<code>/följ</code> + länk – följ en annons: du får ett privat meddelande när priset sänks eller när den "
-        "blir såld (eller svara på ett fynd med <code>/följ</code>)",
-        "<code>/följer</code> – visa annonserna du följer · <code>/avfölj 2</code> – sluta följa nr 2",
-        "Skriv kommandona i fliken <b>General</b> – inte i fynd-flikarna – eller privat till boten.",
     ]
     if isinstance(quiet, list) and len(quiet) == 2:
         lines += ["", f"🌙 Mellan kl. {quiet[0]} och {quiet[1]} kommer fynden utan ljud."]
@@ -2568,6 +2568,17 @@ class LegitListener:
         if chat not in allowed and not own_only and not (private and self.is_member(store, user_id)):
             return
         thread = _thread_of(msg)
+        if not private and command in ("/bevaka", "/bevakningar", "/sluta", "/folj", "/foljer", "/avfolj"):
+            now = time.monotonic()
+            if now - self.last_command.get(user_id, -1e9) < 3:
+                return
+            self.last_command[user_id] = now
+            start = f"https://t.me/{self.username}?start=bevaka" if self.username else None
+            self.reply(chat, msg.get("message_id"), Message("🔔 Bevakningar skrivs privat", [
+                f"Skriv {command} privat till {'@' + self.username if self.username else 'boten'} i stället – "
+                "då får du fynden där och gruppen hålls ren."], "",
+                buttons=[[{"text": "Öppna boten", "url": start}]] if start else []), thread)
+            return
         if command in ("/bevaka", "/bevakningar", "/sluta", "/start"):
             now = time.monotonic()
             if now - self.last_command.get(user_id, -1e9) < 3:

@@ -317,8 +317,10 @@ kopieras har en egen varning. Redan sålda annonser skickas inte alls. Tryck på
 
 Boten får bara skriva till den som tryckt *Starta* hos den, så det behöver man
 göra en gång. Glömmer man det säger boten till, med en knapp att trycka på.
-Kommandona fungerar både i gruppen och i den privata chatten med boten, men
-bara för medlemmar i gruppen. Varje person kan ha 10 bevakningar.
+Bevakningarna (`/bevaka`, `/bevakningar`, `/sluta`, `/följ`, `/följer`, `/avfölj`)
+skrivs privat till boten, bara för medlemmar i gruppen. Skrivs de i gruppen svarar
+boten med en knapp till den privata chatten. Övriga kommandon (`/legit`, `/pris`,
+`/sald`, `/topplista`) skrivs i fliken General. Varje person kan ha 10 bevakningar.
 
 **⚡ Toppmärken söks oftare.** Sökningar med `hot: true` (Moncler, Canada Goose,
 Parajumpers, Stone Island, C.P. Company jackor, Arc'teryx jackor och Ralph Lauren

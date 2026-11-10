@@ -2174,21 +2174,13 @@ class MoreGroupFeatureTests(unittest.TestCase):
         listener.last_command.clear()  # spamspärren testas för sig
         listener.poll(self.store)
 
-    def test_bevaka_in_group_saves_and_confirms_privately(self):
+    def test_bevaka_in_group_points_to_the_private_chat(self):
         listener = self.listener()
         self.say(listener, 1, int(self.GROUP), "/bevaka Moncler L")
-        self.assertEqual(self.store.watches(7), [(1, 7, "Moncler", ["l"])])
-        (dm_method, dm), (_, group_reply) = self.sent
-        self.assertEqual((dm["chat_id"], dm_method), ("7", "sendMessage"))
-        self.assertIn("Moncler (L): märket finns inte i gruppen", dm["text"])   # lyssnaren har inga sökningar här
-        self.assertIn("Klart, Emil! Du får Moncler (L) privat.", group_reply["text"])
-
-    def test_bevaka_needs_the_bot_started_first(self):
-        listener = self.listener(dm_blocked=(7,))
-        self.say(listener, 1, int(self.GROUP), "/bevaka Moncler")
-        self.assertEqual(self.store.watches(7), [])
-        _, group_reply = self.sent[-1]
-        self.assertIn("Tryck Starta hos @fyndbot först", group_reply["text"])
+        self.assertEqual(self.store.watches(7), [])                       # sparas inte från gruppen
+        (_, group_reply), = self.sent
+        self.assertEqual(group_reply["chat_id"], self.GROUP)
+        self.assertIn("Skriv /bevaka privat till @fyndbot", group_reply["text"])
         self.assertEqual(group_reply["reply_markup"]["inline_keyboard"][0][0]["url"], "https://t.me/fyndbot?start=bevaka")
 
     def test_members_can_use_their_private_chat_but_strangers_cannot(self):
@@ -2222,7 +2214,8 @@ class MoreGroupFeatureTests(unittest.TestCase):
         self.api.updates = [[msg, dict(tg_msg(2, int(self.GROUP), "/bevakningar", 7, 100, chat_type="supergroup"))]]
         listener.poll(self.store)
         self.assertEqual(len(self.sent), 1)                     # andra kommandot inom 3 s ignoreras
-        self.assertIn("⏸ Pausade", self.sent[0][1]["text"])
+        self.assertIn("Skriv /bevakningar privat", self.sent[0][1]["text"])
+        self.assertEqual(self.store.watches_paused(7), True)     # gruppen startar inte om bevakningarna
         self.say(listener, 3, 7, "/bevakningar", chat_type="private")
         self.assertEqual([w[1] for w in self.store.watches()], [7])     # igång igen
         self.assertNotIn("⏸ Pausade", self.sent[-1][1]["text"])
@@ -2455,7 +2448,9 @@ class TuneAndFollowTests(unittest.TestCase):
         self.say(listener, 3, "/avfölj alla")
         self.assertEqual(self.store.follows(7), [])
         self.say(listener, 4, "/följ https://www.vinted.se/items/42", chat=int(self.GROUP), chat_type="supergroup")
-        self.assertEqual([p["chat_id"] for p in self.sent[-2:]], ["7", self.GROUP])   # bekräftelse privat + kort svar
+        self.assertEqual(self.sent[-1]["chat_id"], self.GROUP)               # hänvisning till den privata chatten
+        self.assertIn("privat till @fyndbot", self.sent[-1]["text"])
+        self.assertEqual(self.store.follows(7), [])
 
     def test_price_drop_and_sold_are_reported_privately(self):
         self.store.add_follow(7, 42, "Moncler Maya", 1200)
