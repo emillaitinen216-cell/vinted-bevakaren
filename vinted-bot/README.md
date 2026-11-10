@@ -303,6 +303,21 @@ med `/legit` eller `/sald` får stå kvar (`clean_deal_topics`).
 fynd kommit på 12 timmar (`owner_alarms`). I molnet startar dessutom *Vinted-vakten*
 (`.github/workflows/vinted-vakt.yml`) boten igen om ingen körning är igång – den tittar var 30:e minut.
 
+**🎟️ Ansökan med betalning.** Nya medlemmar kan ansöka via en länk och släppas in när de
+betalat. Skriv privat till boten (bara ägaren kan):
+
+- `/betalinfo Swisha 99 kr till 070-123 45 67` – vad den som ansöker ska betala och hur.
+  Sparas i bottens databas, inte i koden.
+- `/lank` – ansökningslänken att dela (`/lank ny` gör en ny). Boten behöver vara admin
+  med rätten *Bjuda in användare via länk*.
+
+Den som trycker på länken skickar en ansökan. Boten skriver direkt till personen med
+betalinfon och ber om en skärmdump på betalningen. Skärmdumpen kommer till dig privat med
+knapparna *✅ Släpp in* och *❌ Neka*, och personen får besked. Du får också ett
+meddelande när någon ansöker, med samma knappar. Ta bort gruppens gamla
+inbjudningslänkar (och sätt på *Godkänn nya medlemmar* om gruppen är offentlig), annars
+kan folk gå med utan att betala. Stängs av med `join_requests: false`.
+
 **🙋 Jag tar den.** Under varje fynd i gruppen finns en knapp. Den som trycker
 först får sitt namn på knappen (*"🙋 Emil tar den"*), så att inte två köper
 samma plagg. Trycker samma person igen släpps fyndet. Trycker någon annan får

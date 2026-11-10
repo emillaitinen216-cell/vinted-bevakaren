@@ -105,6 +105,7 @@ DEFAULTS: dict = {
     "stats_topic": "📊 Statistik",
     "remove_unwatched_deals": True,     # ta bort inlägg med märken som tagits bort ur config.yaml
     "owner_alarms": True,               # privat larm till ägaren när boten stått still, spärras eller inte hittar fynd
+    "join_requests": True,              # ansökningslänk: den som ansöker skickar skärmdump på betalningen, ägaren släpper in
     "clean_deal_topics": True,          # fynd-flikarna är bara för fynd: annat tas bort och hänvisas till General/Snack
     "auto_tune": True,                  # boten justerar varje sökings vinstgräns efter hur fynden säljs             # öppen flik där medlemmarna kan prata; false = ingen                # flikarna "👋 Välkommen" och "📖 Start här", som boten skriver och låser              # veckorapport på söndagar, i samma ämne som dagens bästa
 }
@@ -1543,6 +1544,10 @@ class Store:
             CREATE TABLE IF NOT EXISTS watches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, query TEXT, sizes TEXT,
                 created INTEGER, active INTEGER NOT NULL DEFAULT 1);
+            -- Ansökningar via ansökningslänken (/lank): väntar -> insläppt / nekad.
+            CREATE TABLE IF NOT EXISTS join_requests (
+                user_id INTEGER, chat_id TEXT, name TEXT, ts INTEGER, status TEXT,
+                PRIMARY KEY (user_id, chat_id));
             CREATE TABLE IF NOT EXISTS sent (
                 chat_id TEXT, message_id INTEGER, item_id INTEGER, kind TEXT, html TEXT, url TEXT,
                 ts INTEGER, checks INTEGER NOT NULL DEFAULT 0, status TEXT,
@@ -1666,6 +1671,20 @@ class Store:
 
     def forget_member(self, chat_id: str, user_id) -> None:
         self.db.execute("DELETE FROM members WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
+        self.db.commit()
+
+    def add_join_request(self, user_id: int, chat_id: str, name: str) -> None:
+        self.db.execute("INSERT OR REPLACE INTO join_requests VALUES (?, ?, ?, ?, 'väntar')",
+                        (user_id, chat_id, name, int(time.time())))
+        self.db.commit()
+
+    def join_request(self, user_id) -> tuple[str, str, str] | None:
+        """(grupp, namn, status) för personens senaste ansökan."""
+        return self.db.execute("SELECT chat_id, name, status FROM join_requests WHERE user_id = ? ORDER BY ts DESC LIMIT 1",
+                               (user_id,)).fetchone()
+
+    def set_join_status(self, user_id, chat_id: str, status: str) -> None:
+        self.db.execute("UPDATE join_requests SET status = ? WHERE user_id = ? AND chat_id = ?", (status, user_id, chat_id))
         self.db.commit()
 
     def members(self, chat_id: str) -> list[tuple[int, str]]:
@@ -2530,10 +2549,18 @@ class LegitListener:
         key = telegram_chat_key(self.token)
         return {c for c in (self.fixed_chat, store.get_setting(key), store.get_setting(key + ":private")) if c}
 
+    def group_chat(self, store: "Store") -> str | None:
+        return next((str(c) for c in (self.fixed_chat, store.get_setting(telegram_chat_key(self.token)))
+                     if c and str(c).startswith("-")), None)
+
+    def owner(self, store: "Store") -> str:
+        """Ägarens användar-id (den som kopplade boten), eller "" om det inte är känt."""
+        key = telegram_chat_key(self.token)
+        return store.get_setting(key + ":owner") or store.get_setting(key + ":private") or ""  # privat chatt-id = användar-id
+
     def is_member(self, store: "Store", user_id) -> bool:
         """Är personen med i fynd-gruppen? Då får hen använda boten även i sin privata chatt."""
-        group = next((c for c in (self.fixed_chat, store.get_setting(telegram_chat_key(self.token)))
-                      if c and str(c).startswith("-")), None)
+        group = self.group_chat(store)
         if not group or not isinstance(user_id, int):
             return False
         known, when = self.members.get(user_id, (False, -1e9))
@@ -2549,11 +2576,17 @@ class LegitListener:
 
     def handle(self, update: dict, store: "Store") -> None:
         allowed = self.allowed_chats(store)
+        if isinstance(update.get("chat_join_request"), dict):  # någon tryckte på ansökningslänken
+            self.join_request(update["chat_join_request"], store)
+            return
         query = update.get("callback_query")
         if isinstance(query, dict):  # knapparna under ett fynd
             msg = query.get("message") or {}
             chat = str((msg.get("chat") or {}).get("id", ""))
             data = str(query.get("data") or "")
+            if data.startswith("join:"):  # ✅ Släpp in / ❌ Neka under en ansökan
+                self.join_decision(query, data, store)
+                return
             if chat in allowed and chat.startswith("-"):
                 store.remember_member(chat, query.get("from"))
             if data.startswith("claim:") and chat in allowed:
@@ -2581,6 +2614,8 @@ class LegitListener:
             store.remember_member(chat, msg.get("from"))
             for joined in msg.get("new_chat_members") or []:
                 store.remember_member(chat, joined)
+                if isinstance(joined, dict) and (store.join_request(joined.get("id")) or ("", "", ""))[2] == "väntar":
+                    store.set_join_status(joined.get("id"), chat, "insläppt")  # släppt in direkt i Telegram
             if isinstance(left := msg.get("left_chat_member"), dict):
                 store.forget_member(chat, left.get("id"))
         if addressee and self.username and addressee != self.username.lower():
@@ -2589,6 +2624,11 @@ class LegitListener:
             return  # vanligt kommando för andra botar – svara bara på /help@dennabot
         private = (msg.get("chat") or {}).get("type") == "private"
         user_id = (msg.get("from") or {}).get("id")
+        if private and command in ("/lank", "/länk", "/betalinfo") and str(user_id) == self.owner(store):
+            self.owner_command(command, parts[1] if len(parts) > 1 else "", chat, store)
+            return
+        if private and self.applicant_message(msg, chat, user_id, store):
+            return
         if command in ("/alla", "/everyone", "/all") and chat in allowed and chat.startswith("-"):
             self.tag_everyone(msg, chat, store, parts[1] if len(parts) > 1 else "")
             return
@@ -2655,6 +2695,187 @@ class LegitListener:
             self.reply(chat, msg.get("message_id"), legit_help(), thread)
             return
         self.check(item_id, chat, msg.get("message_id"), (msg.get("from") or {}).get("id"), thread)
+
+    # ---- Ansökningar: länken -> skärmdump på betalningen -> ägaren släpper in ----
+
+    def tg(self, method: str, payload: dict):
+        """Anropar Telegram. Kastar NotifyError (med Telegrams förklaring) eller OSError."""
+        res = http_post_json(f"https://api.telegram.org/bot{self.token}/{method}", payload)
+        return res.get("result") if isinstance(res, dict) else res
+
+    def send_html(self, chat, text: str, buttons: list | None = None) -> bool:
+        payload: dict = {"chat_id": chat, "text": text[:4096], "parse_mode": "HTML",
+                         "link_preview_options": {"is_disabled": True}}
+        if buttons:
+            payload["reply_markup"] = {"inline_keyboard": buttons}
+        try:
+            self.tg("sendMessage", payload)
+            return True
+        except (NotifyError, OSError):
+            return False
+
+    @staticmethod
+    def join_buttons(user_id: int) -> list:
+        return [[{"text": "✅ Släpp in", "callback_data": f"join:ok:{user_id}"},
+                 {"text": "❌ Neka", "callback_data": f"join:no:{user_id}"}]]
+
+    @staticmethod
+    def mention(user_id, name: str, username: str = "") -> str:
+        link = f'<a href="tg://user?id={user_id}">{escape(name, quote=False)}</a>'
+        return link + (f" (@{escape(username, quote=False)})" if username else "")
+
+    def pay_steps(self, store: "Store") -> list[str]:
+        pay = (store.get_setting("join:payinfo") or "").strip()
+        first = f"1. Betala: {escape(pay, quote=False)}" if pay else "1. Betala enligt instruktionerna du fått från ägaren."
+        return [first, "2. Skicka en <b>skärmdump på betalningen</b> här i chatten.",
+                "När betalningen är kollad släpps du in direkt och får ett meddelande här."]
+
+    def join_request(self, req: dict, store: "Store") -> None:
+        """Någon har ansökt via länken: be om skärmdump på betalningen och säg till ägaren."""
+        chat = str((req.get("chat") or {}).get("id", ""))
+        user = req.get("from") or {}
+        user_id = user.get("id")
+        if not self.cfg.get("join_requests", True) or chat != self.group_chat(store) or not isinstance(user_id, int) \
+                or user.get("is_bot"):
+            return
+        name = str(user.get("first_name") or user.get("username") or "Någon")[:30]
+        store.add_join_request(user_id, chat, name)
+        title = escape(str((req.get("chat") or {}).get("title") or "gruppen"), quote=False)
+        # Telegram låter boten skriva till den som ansöker (via user_chat_id) en kort stund efter ansökan.
+        reached = self.send_html(req.get("user_chat_id") or user_id, "\n".join(
+            [f"<b>👋 Tack för din ansökan till {title}!</b>", "", "Så här går du med:"] + self.pay_steps(store)))
+        log.info("Ny ansökan till gruppen%s", "" if reached else " (kunde inte skriva till personen)")
+        owner = self.owner(store)
+        if owner:
+            lines = [f"<b>🆕 Ny ansökan</b>", self.mention(user_id, name, str(user.get("username") or ""))]
+            lines.append("Jag har bett hen skicka en skärmdump på betalningen – den kommer hit." if reached else
+                         "⚠️ Jag kunde inte skriva till hen – skriv själv och be om betalning.")
+            self.send_html(owner, "\n".join(lines), self.join_buttons(user_id))
+
+    def applicant_message(self, msg: dict, chat: str, user_id, store: "Store") -> bool:
+        """Privat meddelande från någon som väntar på att släppas in. True = hanterat här."""
+        row = store.join_request(user_id) if isinstance(user_id, int) else None
+        if not row or row[2] != "väntar" or str(user_id) == self.owner(store):
+            return False
+        group, name, _ = row
+        if self.is_member(store, user_id):
+            store.set_join_status(user_id, group, "insläppt")  # redan med (insläppt på annat sätt)
+            return False
+        now = time.monotonic()
+        if now - self.last_command.get(user_id, -1e9) < 3:
+            return True  # spamskydd
+        self.last_command[user_id] = now
+        image = "photo" in msg or str((msg.get("document") or {}).get("mime_type") or "").startswith(("image/", "application/pdf"))
+        if not image:
+            self.send_html(chat, "\n".join(["<b>📸 Skärmdump på betalningen</b>"] + self.pay_steps(store)))
+            return True
+        owner = self.owner(store)
+        user = msg.get("from") or {}
+        caption = "\n".join([f"<b>💸 Betalning från</b> {self.mention(user_id, name, str(user.get('username') or ''))}",
+                             "Släpp in?"])
+        try:
+            if not owner:
+                raise NotifyError(0, "ägaren okänd")
+            self.tg("copyMessage", {"chat_id": owner, "from_chat_id": chat, "message_id": msg.get("message_id"),
+                                    "caption": caption, "parse_mode": "HTML",
+                                    "reply_markup": {"inline_keyboard": self.join_buttons(user_id)}})
+        except (NotifyError, OSError) as e:
+            log.warning("Ansökan: kunde inte skicka skärmdumpen till ägaren (%s)",
+                        getattr(e, "description", type(e).__name__) if not QUIET else getattr(e, "status", "fel"))
+            self.send_html(chat, "Något gick fel när skärmdumpen skulle skickas – försök igen om en stund.")
+            return True
+        self.send_html(chat, "<b>✅ Tack!</b>\nSkärmdumpen är skickad. Du får ett meddelande här när du är insläppt.")
+        return True
+
+    def join_decision(self, query: dict, data: str, store: "Store") -> None:
+        """Ägaren tryckte ✅ Släpp in eller ❌ Neka."""
+        m = re.fullmatch(r"join:(ok|no):(\d+)", data)
+        if not m:
+            self.answer(query, "")
+            return
+        if str((query.get("from") or {}).get("id")) != self.owner(store):
+            self.answer(query, "Bara ägaren kan släppa in.")
+            return
+        user_id, approve = int(m.group(2)), m.group(1) == "ok"
+        row = store.join_request(user_id)
+        if not row:
+            self.answer(query, "Hittar inte ansökan.")
+            return
+        group, name, status = row
+        if status == "väntar":
+            try:
+                self.tg("approveChatJoinRequest" if approve else "declineChatJoinRequest",
+                        {"chat_id": group, "user_id": user_id})
+                status = "insläppt" if approve else "nekad"
+            except NotifyError as e:
+                why = e.description or ""
+                if "USER_ALREADY_PARTICIPANT" in why:
+                    status = "insläppt"
+                elif "HIDE_REQUESTER_MISSING" in why:
+                    status = "borta"  # ansökan är återkallad eller redan hanterad i Telegram
+                else:
+                    self.answer(query, "Telegram sa nej – boten behöver rätten 'Bjuda in användare' i gruppen.")
+                    return
+            except OSError:
+                self.answer(query, "Kunde inte nå Telegram – försök igen.")
+                return
+            store.set_join_status(user_id, group, status)
+            if status in ("insläppt", "nekad"):
+                self.send_html(user_id, "<b>✅ Välkommen!</b>\nDu är nu med i gruppen – fynden kommer i flikarna. "
+                               "Läs gärna fliken Start här först." if status == "insläppt" else
+                               "<b>Din ansökan godkändes inte.</b>\nHör av dig till ägaren om du tror att det är fel.")
+        label = {"insläppt": f"✅ {name} är insläppt", "nekad": f"❌ {name} är nekad",
+                 "borta": f"Ansökan från {name} finns inte längre"}.get(status, status)
+        self.answer(query, label)
+        msg = query.get("message") or {}
+        try:  # byt knapparna mot hur det gick, så att samma ansökan inte hanteras två gånger
+            self.tg("editMessageReplyMarkup", {"chat_id": (msg.get("chat") or {}).get("id"),
+                                               "message_id": msg.get("message_id"), "reply_markup": {
+                                                   "inline_keyboard": [[{"text": label, "callback_data": "join:klar"}]]}})
+        except (NotifyError, OSError):
+            pass
+
+    def owner_command(self, command: str, arg: str, chat: str, store: "Store") -> None:
+        """/lank – ansökningslänken. /betalinfo text – vad den som ansöker ska betala och hur."""
+        if command == "/betalinfo":
+            arg = arg.strip()[:500]
+            if arg:
+                store.set_setting("join:payinfo", arg)
+            current = store.get_setting("join:payinfo") or ""
+            if not current:
+                self.send_html(chat, "<b>💳 Betalinfo</b>\nSkriv vad den som ansöker ska betala och hur, t.ex.\n"
+                               "/betalinfo Swisha 99 kr till 070-123 45 67 och skriv ditt Telegram-namn")
+                return
+            self.send_html(chat, "\n".join(["<b>💳 Betalinfo sparad</b>" if arg else "<b>💳 Betalinfo</b>",
+                                            "Så här ser det ut för den som ansöker:", ""] + self.pay_steps(store) +
+                                           ["", "Ändra med /betalinfo och ny text."]))
+            return
+        group = self.group_chat(store)
+        if not group:
+            self.send_html(chat, "Boten är inte kopplad till någon grupp än.")
+            return
+        key = f"join:link:{group}"
+        link = store.get_setting(key) or ""
+        if not link or arg.strip().lower() == "ny":
+            try:
+                res = self.tg("createChatInviteLink", {"chat_id": group, "name": "Ansökan", "creates_join_request": True})
+                link = str((res or {}).get("invite_link") or "")
+            except (NotifyError, OSError):
+                link = ""
+            if not link:
+                self.send_html(chat, "<b>🔗 Kunde inte skapa länken</b>\nGör boten till admin i gruppen med rätten "
+                               "<b>Bjuda in användare via länk</b> och skriv /lank igen.")
+                return
+            store.set_setting(key, link)
+        pay = store.get_setting("join:payinfo")
+        self.send_html(chat, "\n".join([
+            "<b>🔗 Ansökningslänk</b>", escape(link, quote=False), "",
+            "Dela länken. Den som trycker på den skickar en ansökan, och jag ber hen om en skärmdump på betalningen. "
+            "Skärmdumpen kommer hit med knapparna ✅ Släpp in och ❌ Neka.",
+            "", f"💳 Betalinfo: {escape(pay, quote=False)}" if pay else
+            "💳 Betalinfo saknas – skriv t.ex. /betalinfo Swisha 99 kr till 070-123 45 67",
+            "", "Viktigt: ta bort gruppens gamla länkar (och sätt på <i>Godkänn nya medlemmar</i> om gruppen är "
+            "offentlig), annars kan folk gå med utan att betala. /lank ny gör en ny ansökningslänk."]))
 
     def is_admin(self, chat: str, user_id) -> bool:
         known, when = self.admins.get(user_id, (False, -1e9))

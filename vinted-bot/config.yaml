@@ -171,6 +171,11 @@ remove_unwatched_deals: true
 # spärrat den tre varv i rad, eller när inga fynd kommit på 12 timmar. false = inga larm.
 owner_alarms: true
 
+# Ansökan med betalning: /lank (privat till boten) ger en ansökningslänk, /betalinfo sätter
+# vad man ska betala. Den som ansöker skickar en skärmdump på betalningen till boten, och du
+# får den med knapparna ✅ Släpp in och ❌ Neka. false = boten bryr sig inte om ansökningar.
+join_requests: true
+
 # Fynd-flikarna är bara för fynd: det medlemmar skriver där tas bort (admins undantagna, och
 # svar på ett fynd med /legit eller /sald). Kommandon besvaras i General i stället, och den som
 # chattat får en vänlig hänvisning i Snack. Kräver att boten får ta bort meddelanden. false = av.

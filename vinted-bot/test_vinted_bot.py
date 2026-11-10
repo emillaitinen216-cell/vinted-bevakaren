@@ -2755,5 +2755,135 @@ class CleanDealTopicTests(unittest.TestCase):
         self.assertEqual(self.sent[0][1]["message_thread_id"], 500)
 
 
+class JoinRequestTests(unittest.TestCase):
+    """Ansökningslänken: ansökan -> skärmdump på betalningen -> ägaren släpper in eller nekar."""
+    GROUP = "-1001"
+    OWNER = 1
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "bot.db"
+        self.store = vb.Store(self.db)
+        self.addCleanup(self.store.db.close)
+        key = vb.telegram_chat_key(TOKEN)
+        self.store.set_setting(key, self.GROUP)
+        self.store.set_setting(key + ":owner", str(self.OWNER))
+        self.store.set_setting(key + ":private", str(self.OWNER))
+        self.sent = []
+        self.fail = {}
+
+        def post(url, payload, timeout=20):
+            method = url.rsplit("/", 1)[1]
+            self.sent.append((method, payload))
+            if method in self.fail:
+                raise vb.NotifyError(400, json.dumps({"ok": False, "description": self.fail[method]}))
+            if method == "createChatInviteLink":
+                return {"ok": True, "result": {"invite_link": "https://t.me/+ansok"}}
+            return {"ok": True, "result": {"message_id": 9}}
+
+        patcher = mock.patch.object(vb, "http_post_json", side_effect=post)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.api = MembersTelegram(members=(self.OWNER,))
+        self.listener = vb.LegitListener(TOKEN, self.db, make_cfg(), [], LEGIT_TIPS, api=self.api, client=FakeClient())
+
+    def poll(self, update):
+        self.api.updates = [[update]]
+        self.listener.last_command.clear()
+        self.listener.poll(self.store)
+
+    def request(self, update_id=1, user=7):
+        self.poll({"update_id": update_id, "chat_join_request": {
+            "chat": {"id": int(self.GROUP), "type": "supergroup", "title": "VintedSnipes"},
+            "from": {"id": user, "first_name": "Kalle", "username": "kalle"}, "user_chat_id": user, "date": 100}})
+
+    def private(self, update_id, user, text=None, **extra):
+        msg = tg_msg(update_id, user, text, user, 100)
+        if text is None:
+            del msg["message"]["text"]
+        msg["message"].update(message_id=50 + update_id, **extra)
+        msg["message"]["from"].update(first_name="Kalle", username="kalle")
+        self.poll(msg)
+
+    def press(self, update_id, data, user=OWNER):
+        self.poll({"update_id": update_id, "callback_query": {
+            "id": "q", "data": data, "from": {"id": user},
+            "message": {"message_id": 9, "chat": {"id": self.OWNER, "type": "private"}}}})
+
+    def test_whole_flow_from_link_to_approved(self):
+        self.private(1, self.OWNER, "/betalinfo Swisha 99 kr till 070-123 45 67")
+        self.assertIn("Betalinfo sparad", self.sent[-1][1]["text"])
+        self.private(2, self.OWNER, "/länk")
+        method, link = self.sent[-2]
+        self.assertEqual((method, link["creates_join_request"]), ("createChatInviteLink", True))
+        self.assertIn("https://t.me/+ansok", self.sent[-1][1]["text"])
+        self.sent.clear()
+        self.request(3)
+        (_, to_applicant), (_, to_owner) = self.sent
+        self.assertEqual(to_applicant["chat_id"], 7)
+        self.assertIn("Swisha 99 kr till 070-123 45 67", to_applicant["text"])
+        self.assertEqual(to_owner["chat_id"], str(self.OWNER))
+        self.assertIn("Ny ansökan", to_owner["text"])
+        self.sent.clear()
+        self.private(4, 7, "hej, hur gör jag?")                          # text i stället för bild: instruktionerna igen
+        self.assertIn("skärmdump på betalningen", self.sent[-1][1]["text"])
+        self.private(5, 7, photo=[{"file_id": "x"}])                        # skärmdumpen
+        method, copy = self.sent[-2]
+        self.assertEqual((method, copy["chat_id"], copy["from_chat_id"], copy["message_id"]),
+                         ("copyMessage", str(self.OWNER), "7", 55))
+        self.assertEqual(copy["reply_markup"]["inline_keyboard"][0][0]["callback_data"], "join:ok:7")
+        self.assertIn("Skärmdumpen är skickad", self.sent[-1][1]["text"])
+        self.sent.clear()
+        self.press(6, "join:ok:7")
+        self.assertEqual(self.sent[0], ("approveChatJoinRequest", {"chat_id": self.GROUP, "user_id": 7}))
+        self.assertIn("Välkommen", self.sent[1][1]["text"])
+        self.assertEqual(self.sent[2][0], "editMessageReplyMarkup")
+        self.assertEqual(self.store.join_request(7)[2], "insläppt")
+        self.sent.clear()
+        self.press(7, "join:ok:7")                                          # dubbeltryck: inget nytt anrop
+        self.assertNotIn("approveChatJoinRequest", [m for m, _ in self.sent])
+
+    def test_only_the_owner_decides_and_decline_works(self):
+        self.request()
+        self.sent.clear()
+        self.press(2, "join:ok:7", user=8)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.store.join_request(7)[2], "väntar")
+        self.press(3, "join:no:7")
+        self.assertEqual(self.sent[0][0], "declineChatJoinRequest")
+        self.assertIn("godkändes inte", self.sent[1][1]["text"])
+        self.assertEqual(self.store.join_request(7)[2], "nekad")
+
+    def test_withdrawn_request_and_missing_rights(self):
+        self.request()
+        self.fail["approveChatJoinRequest"] = "Bad Request: not enough rights"
+        self.press(2, "join:ok:7")
+        self.assertEqual(self.store.join_request(7)[2], "väntar")          # inget ändrat – kan tryckas igen
+        self.fail["approveChatJoinRequest"] = "Bad Request: HIDE_REQUESTER_MISSING"
+        self.press(3, "join:ok:7")
+        self.assertEqual(self.store.join_request(7)[2], "borta")
+
+    def test_owner_is_told_when_applicant_cannot_be_reached(self):
+        self.fail["sendMessage"] = "Forbidden: bot can't initiate conversation with a user"
+        self.request()
+        self.assertEqual(self.sent[-1][0], "sendMessage")                   # försökte ändå säga till ägaren
+        self.assertIn("kunde inte skriva till hen", self.sent[-1][1]["text"])
+
+    def test_requests_to_other_chats_and_other_peoples_commands_are_ignored(self):
+        self.poll({"update_id": 1, "chat_join_request": {"chat": {"id": -999, "type": "supergroup"},
+                                                          "from": {"id": 7, "first_name": "K"}, "user_chat_id": 7}})
+        self.private(2, 8, "/lank")                                         # inte ägaren
+        self.assertEqual(self.sent, [])
+        self.assertIsNone(self.store.join_request(7))
+
+    def test_members_are_not_treated_as_applicants(self):
+        self.request()
+        self.api.members.add(7)                                             # släppt in direkt i Telegram
+        self.sent.clear()
+        self.private(2, 7, "/bevakningar")
+        self.assertEqual(self.store.join_request(7)[2], "insläppt")
+        self.assertNotIn("copyMessage", [m for m, _ in self.sent])
+
 if __name__ == "__main__":
     unittest.main()
