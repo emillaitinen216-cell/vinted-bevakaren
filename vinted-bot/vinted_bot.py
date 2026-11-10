@@ -104,7 +104,8 @@ DEFAULTS: dict = {
     "chat_topic": "💬 Snack",
     "stats_topic": "📊 Statistik",
     "price_topic": "💰 Prischeck",
-    "resell_topic": "📈 Resell Guide",      # låst flik: bevaka vilka plagg som helst + hur man resellar bäst         # flik där man skriver ett plagg och får vad det kostar på Vinted
+    "resell_topic": "📈 Resell Guide",
+    "wins_topic": "🏆 Vinster",             # öppen flik där medlemmarna visar sina vinster (/sald hamnar också här)      # låst flik: bevaka vilka plagg som helst + hur man resellar bäst         # flik där man skriver ett plagg och får vad det kostar på Vinted
     "remove_unwatched_deals": True,     # ta bort inlägg med märken som tagits bort ur config.yaml
     "owner_alarms": True,               # privat larm till ägaren när boten stått still, spärras eller inte hittar fynd
     "join_requests": True,              # ansökningslänk: den som ansöker skickar skärmdump på betalningen, ägaren släpper in
@@ -2289,6 +2290,21 @@ def price_text() -> str:
     ])
 
 
+def wins_text() -> str:
+    return "\n".join([
+        "<b>🏆 Vinster</b>",
+        "",
+        "Visa vad du tjänat! Lägg upp en skärmdump på det sålda plagget och skriv vad du köpte och sålde för, "
+        "t.ex. <i>Köpt 450, såld 1 200 – Moncler Maya</i>.",
+        "",
+        "Skriv gärna <code>/sald 1200 450</code> (såld för, köpt för) – då hamnar vinsten på månadens "
+        "<code>/topplista</code>. Svarar du på fyndet med <code>/sald 1200</code> räknar boten ut resten själv, "
+        "och vinsten visas här.",
+        "",
+        "Bara vinster här – frågor och snack i 💬 Snack. 🙌",
+    ])
+
+
 def resell_text() -> str:
     return "\n".join([
         "<b>📈 Resell Guide</b>",
@@ -3155,6 +3171,11 @@ class LegitListener:
         lines = [f"{'Snyggt' if profit > 0 else 'Noterat'}, {name}! {'+' if profit >= 0 else ''}{money(profit)} kr{what}.",
                  f"Din vinst den här månaden: {money(total)} kr" + (f" – plats {place} i /topplista." if place else ".")]
         self.reply(chat, msg.get("message_id"), Message("🏆 Sålt!", lines, "", buttons=[]), thread)
+        wins = store.get_setting(f"topic:{chat}:{self.cfg.get('wins_topic')}") if self.cfg.get("wins_topic") else None
+        if profit > 0 and chat.startswith("-") and wins and wins.isdigit() and int(wins) != thread:
+            self.reply(chat, None, Message("🎉 Ny vinst", [  # syns i Vinster-fliken också
+                f"{name} sålde{what or ' ett plagg'} för {money(sold)} kr – +{money(profit)} kr i vinst!"], "", buttons=[]),
+                int(wins))
 
     def follow_command(self, command: str, arg: str, msg: dict, chat: str, store: "Store",
                        thread: int | None, private: bool) -> None:
@@ -3719,6 +3740,8 @@ class Bot:
             pages[str(price)] = price_text()
         if resell := self.cfg.get("resell_topic"):
             pages[str(resell)] = resell_text()
+        if wins := self.cfg.get("wins_topic"):
+            pages[str(wins)] = wins_text()
         return pages
 
     def stats_page(self, now: datetime | None = None) -> str:

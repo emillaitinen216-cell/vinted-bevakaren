@@ -1512,11 +1512,11 @@ class GroupFeatureTests(unittest.TestCase):
         bot.run_cycle()
         bot.run_cycle()
         self.assertEqual([p["name"] for p in api.made("createForumTopic")],
-                         ["👋 Välkommen", "📖 Start här", "💬 Snack", "📊 Statistik", "💰 Prischeck", "📈 Resell Guide", "Dunjackor", "Jackor", "Jeans",
+                         ["👋 Välkommen", "📖 Start här", "💬 Snack", "📊 Statistik", "💰 Prischeck", "📈 Resell Guide", "🏆 Vinster", "Dunjackor", "Jackor", "Jeans",
                           "Tröjor & skjortor", "Byxor & shorts", "⭐ Dagens bästa"])
         self.assertEqual(len(api.made("getChat")), 2)            # en gång per varv
         self.assertEqual(api.made("sendPhoto"), [])
-        self.assertEqual([p["message_thread_id"] for p in api.made("sendMessage")], [500, 501, 502, 503, 504, 505])  # en gång
+        self.assertEqual([p["message_thread_id"] for p in api.made("sendMessage")], [500, 501, 502, 503, 504, 505, 506])  # en gång
         self.assertEqual([p["message_thread_id"] for p in api.made("closeForumTopic")], [500, 501, 503, 505])  # Snack och Prischeck är öppna
 
     def test_info_topics_are_written_once_pinned_locked_and_updated(self):
@@ -2757,6 +2757,16 @@ class CleanDealTopicTests(unittest.TestCase):
         self.say(2, "snygg!", thread=700, reply_to_message={"message_id": 5, "from": {"id": 3, "is_bot": False}})
         self.say(3, "Moncler Maya", thread=600)                              # Snack: ingen prischeck
         self.assertEqual(self.sent, [])
+
+    def test_sales_are_celebrated_in_the_wins_topic(self):
+        self.store.set_setting(f"topic:{self.GROUP}:🏆 Vinster", "800")
+        self.say(1, "/sald 1200 400", thread=600)                           # i Snack
+        (_, answer), (_, cheer) = self.sent
+        self.assertEqual((answer["message_thread_id"], cheer["message_thread_id"]), (600, 800))
+        self.assertIn("Kalle sålde ett plagg för 1 200 kr – +800 kr i vinst!", cheer["text"])
+        self.sent.clear()
+        self.say(2, "/sald 1500 400", thread=800)                           # i Vinster: bara ett svar
+        self.assertEqual(len(self.sent), 1)
 
     def test_admins_snack_and_replies_to_deals_are_left_alone(self):
         self.say(1, "Ny regel i gruppen", user=1)                            # admin

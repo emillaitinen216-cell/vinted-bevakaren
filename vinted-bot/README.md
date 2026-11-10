@@ -272,6 +272,10 @@ sälja snabbt (samma som `/pris`). Svar till andra medlemmar i fliken lämnas if
 hur man resellar bäst: köpa rätt, sälja bra, säsonger, vad man ska undvika och kort om
 skatt (`resell_topic`).
 
+**🏆 Vinster.** En öppen flik där medlemmarna visar sina vinster med skärmdumpar. När
+någon rapporterar en vinst med `/sald` skriver boten också en rad här, t.ex. *Kalle sålde
+Moncler Maya för 1 200 kr – +750 kr i vinst!* (`wins_topic`).
+
 **💰 /pris, 📝 Säljtext och 🏆 topplistan.**
 
 - `/pris Moncler Maya` visar vad liknande plagg kostar på Vinted just nu: median,

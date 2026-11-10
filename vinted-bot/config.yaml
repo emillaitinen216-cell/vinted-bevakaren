@@ -25,8 +25,8 @@ notify_on_first_run: false
 
 shipping_estimate: 49           # frakten du betalar som köpare
 sell_fee_percent: 0             # Vinted tar ingen säljavgift. Tradera m.fl.: sätt t.ex. 10
-min_profit: 100                 # standard om en sökning inte anger eget
-min_roi_percent: 30             # minsta avkastning på insatsen
+min_profit: 85                  # standard om en sökning inte anger eget
+min_roi_percent: 25             # minsta avkastning på insatsen
 
 # Säljvärdet multipliceras med skickfaktorn (resale anges för "Mycket bra").
 condition_multipliers:
@@ -171,6 +171,10 @@ price_topic: "💰 Prischeck"
 # (köp rätt, sälj bra, säsong, vad man ska undvika, skatt). false = ingen guide-flik.
 resell_topic: "📈 Resell Guide"
 
+# Öppen flik där medlemmarna visar sina vinster. När någon skriver /sald med vinst
+# (var som helst i gruppen) skriver boten också en rad här. false = ingen vinst-flik.
+wins_topic: "🏆 Vinster"
+
 # Tar bort inlägg (i gruppen och privat) med fynd i märken som tagits bort härifrån.
 # Telegram låter bara boten ta bort inlägg som är högst 48 timmar gamla. false = behåll dem.
 remove_unwatched_deals: true
@@ -229,8 +233,8 @@ searches:
   # vad som blir notis. Ett plagg med bonusord (t.ex. "zatiny") kan därför vara
   # lönsamt nära taket medan ett vanligt behöver vara betydligt billigare.
   #
-  # "min_profit" är satt så att varje sökning ger högst ungefär två notiser per
-  # dygn (uppmätt på vinted.se i oktober 2026), alltså bara de bästa fynden.
+  # "min_profit" sattes först så att varje sökning gav högst ungefär två notiser per
+  # dygn (uppmätt på vinted.se i oktober 2026) och sänktes sedan 15 % för fler fynd.
   # Populära märken som Ralph Lauren och Supreme har så många billiga annonser
   # att i stort sett bara plagg med bonusord (t.ex. "polo bear", "box logo")
   # räcker. Vill du ha fler notiser sänker du min_profit, färre höjer du den.
@@ -242,7 +246,7 @@ searches:
     catalog: [257]
     tags: [Jeans]
     max_price: 250
-    min_profit: 210
+    min_profit: 180
     brands:
       Nudie: 380            # median ~400 kr, undre kvartil ~300 kr
     premium_keywords:
@@ -254,7 +258,7 @@ searches:
     catalog: [257]
     tags: [Jeans]
     max_price: 200
-    min_profit: 200
+    min_profit: 170
     brands:
       Replay: 320           # median ~350 kr, undre kvartil ~200 kr
     premium_keywords:
@@ -265,7 +269,7 @@ searches:
     catalog: [257]
     tags: [Jeans]
     max_price: 320
-    min_profit: 170
+    min_profit: 140
     brands:
       Dondup: 480           # median ~500 kr, undre kvartil ~400 kr
 
@@ -274,7 +278,7 @@ searches:
     catalog: [257]
     tags: [Jeans]
     max_price: 250
-    min_profit: 180
+    min_profit: 150
     brands:
       Diesel: 260           # median ~256 kr, undre kvartil ~155 kr – vanliga Diesel måste vara riktigt billiga
     premium_keywords:
@@ -288,7 +292,7 @@ searches:
     catalog: [257]
     tags: [Jeans, Bootcut]
     max_price: 300
-    min_profit: 200
+    min_profit: 170
     brands:
       True Religion: 800
       Evisu: 900
@@ -311,7 +315,7 @@ searches:
     catalog: [257]
     tags: [Jeans, Bootcut]
     max_price: 260
-    min_profit: 150
+    min_profit: 130
     brands:
       "Levi's": 450         # median ~500 kr
     premium_keywords:
@@ -324,7 +328,7 @@ searches:
     catalog: [257]
     tags: [Jeans, Bootcut]
     max_price: 300
-    min_profit: 180
+    min_profit: 150
     brands:
       True Religion: 700    # median ~750 kr
       Diesel: 500
@@ -337,7 +341,7 @@ searches:
     catalog: [257]
     tags: [Jeans]
     max_price: 300
-    min_profit: 150
+    min_profit: 130
     brands:
       True Religion: 700
       Rock Revival: 650     # median ~730 kr
@@ -359,7 +363,7 @@ searches:
     catalog: [257]
     tags: [Jeans]
     max_price: 230
-    min_profit: 140
+    min_profit: 120
     brands:
       Edwin: 400            # median ~370 kr, mitten-hälften 230–700 kr; ~15 nya annonser per dygn
     premium_keywords:
@@ -374,7 +378,7 @@ searches:
     catalog: [257]
     tags: [Jeans]
     max_price: 300
-    min_profit: 150
+    min_profit: 130
     brands:
       Evisu: 800
       True Religion: 700
@@ -390,7 +394,7 @@ searches:
     query: ""
     catalog: [2535]
     tags: [Fältjacka]
-    min_profit: 340
+    min_profit: 290
     brands:
       Stone Island:        {resale: 2000, max_price: 1100, suspicious_below: 500}
       "C.P. Company":      {resale: 1600, max_price: 900,  suspicious_below: 400}
@@ -407,7 +411,7 @@ searches:
     catalog: [1206]
     tags: [Jacka]
     max_price: 650
-    min_profit: 550
+    min_profit: 470
     suspicious_below: 200
     brands:
       Barbour: 800          # median ~830 kr, undre kvartil ~515 kr
@@ -422,7 +426,7 @@ searches:
     catalog: [1206]
     tags: [Fältjacka]
     max_price: 550
-    min_profit: 250
+    min_profit: 210
     brands:
       Ralph Lauren: 1000    # median ~1 200 kr
       Lauren Ralph Lauren: ignorera
@@ -442,7 +446,7 @@ searches:
     tags: [Dunjacka]
     min_price: 900          # under det är det nästan alltid kopior eller barnjackor
     max_price: 2400
-    min_profit: 1980
+    min_profit: 1680
     suspicious_below: 1500  # Moncler är det mest kopierade märket – var extra noga
     brands:
       Moncler: 3200         # median ~3 500 kr, undre kvartil ~2 000 kr
@@ -456,7 +460,7 @@ searches:
     tags: [Dunjacka]
     min_price: 900
     max_price: 2300
-    min_profit: 1870
+    min_profit: 1590
     suspicious_below: 1500
     brands:
       Canada Goose: 3000    # median ~3 400 kr, undre kvartil ~2 100 kr
@@ -469,7 +473,7 @@ searches:
     tags: [Dunjacka]
     min_price: 400
     max_price: 1400
-    min_profit: 1080
+    min_profit: 920
     brands:
       "Arc'teryx": 2000        # median ~2 100 kr, undre kvartil ~1 550 kr
     premium_keywords:
@@ -484,7 +488,7 @@ searches:
     tags: [Dunjacka]
     min_price: 300
     max_price: 900
-    min_profit: 700
+    min_profit: 600
     suspicious_below: 500
     brands:
       Parajumpers: 1300     # median ~1 450 kr, undre kvartil ~900 kr
@@ -496,7 +500,7 @@ searches:
     catalog: [2536, 2051]
     tags: [Dunjacka]
     max_price: 750
-    min_profit: 650
+    min_profit: 550
     brands:
       Fjällräven: 1100      # median ~1 200 kr, undre kvartil ~760 kr
     premium_keywords:
@@ -507,7 +511,7 @@ searches:
     catalog: [2536]
     tags: [Dunjacka]
     max_price: 600
-    min_profit: 330
+    min_profit: 280
     brands:
       Patagonia: 950        # median ~925 kr, undre kvartil ~720 kr
     premium_keywords:
@@ -519,7 +523,7 @@ searches:
     catalog: [2536]
     tags: [Dunjacka]
     max_price: 700
-    min_profit: 350
+    min_profit: 300
     brands:
       J.Lindeberg: 950      # median ~1 060 kr, undre kvartil ~500 kr; ~10 nya annonser per dygn
 
@@ -528,7 +532,7 @@ searches:
     catalog: [1206]
     tags: [Dunjacka]
     max_price: 600
-    min_profit: 520
+    min_profit: 440
     brands:
       Colmar: 900           # median ~1 000 kr, mitten-hälften 600–1 500 kr; ~27 nya annonser per dygn
 
@@ -544,7 +548,7 @@ searches:
     tags: [Jacka]
     min_price: 360
     max_price: 1480
-    min_profit: 1010
+    min_profit: 860
     suspicious_below: 730   # kolla märket (badge), knapparna och certilogo-koden
     brands:
       Stone Island: 1770    # median ~1 970 kr, undre kvartil ~1 210 kr
@@ -559,7 +563,7 @@ searches:
     tags: [Jacka]
     min_price: 320
     max_price: 1470
-    min_profit: 1160
+    min_profit: 990
     suspicious_below: 630   # goggle-jackan är bland det mest kopierade – kolla linserna och etiketterna
     brands:
       "C.P. Company": 1770  # median ~1 970 kr, undre kvartil ~1 060 kr
@@ -572,7 +576,7 @@ searches:
     tags: [Jacka]
     min_price: 420
     max_price: 1500
-    min_profit: 900
+    min_profit: 760
     suspicious_below: 840
     brands:
       Burberry: 1800        # median ~2 000 kr, undre kvartil ~1 400 kr
@@ -589,7 +593,7 @@ searches:
     tags: [Jacka]
     min_price: 600          # billigare än så är nästan alltid kopior
     max_price: 2160
-    min_profit: 1350
+    min_profit: 1150
     suspicious_below: 1200
     brands:
       Prada: 2590           # median ~2 880 kr, undre kvartil ~1 700 kr
@@ -603,7 +607,7 @@ searches:
     tags: [Dunjacka]
     min_price: 900          # mycket kopierat – be om kvitto och bilder på märket
     max_price: 2500
-    min_profit: 1730
+    min_profit: 1470
     suspicious_below: 1500
     brands:
       Moose Knuckles: 3000  # median ~3 330 kr, undre kvartil ~1 850 kr
@@ -615,7 +619,7 @@ searches:
     tags: [Jacka]
     min_price: 320
     max_price: 1190
-    min_profit: 690
+    min_profit: 590
     suspicious_below: 700   # kopior av Beta och Atom är vanliga
     brands:
       "Arc'teryx": 1430     # median ~1 580 kr, undre kvartil ~1 060 kr
@@ -629,7 +633,7 @@ searches:
     catalog: [1206]
     tags: [Jacka]
     max_price: 1500
-    min_profit: 490
+    min_profit: 420
     brands:
       Herno: 1800           # median ~2 000 kr, undre kvartil ~1 400 kr (få annonser)
     premium_keywords:
@@ -640,7 +644,7 @@ searches:
     catalog: [2052]
     tags: [Jacka]
     max_price: 730
-    min_profit: 610
+    min_profit: 520
     suspicious_below: 240
     brands:
       Ralph Lauren: 880     # median ~980 kr, undre kvartil ~530 kr
@@ -659,7 +663,7 @@ searches:
     catalog: [1206]
     tags: [Jacka]
     max_price: 670
-    min_profit: 550
+    min_profit: 470
     suspicious_below: 230
     brands:
       Woolrich: 810         # median ~900 kr, undre kvartil ~520 kr
@@ -672,7 +676,7 @@ searches:
     catalog: [2052]
     tags: [Jacka]
     max_price: 580
-    min_profit: 380
+    min_profit: 320
     brands:
       Patagonia: 700        # median ~780 kr, undre kvartil ~520 kr
     premium_keywords:
@@ -685,7 +689,7 @@ searches:
     catalog: [2052]
     tags: [Jacka]
     max_price: 320
-    min_profit: 200
+    min_profit: 170
     brands:
       Abercrombie: 450      # "Abercrombie & Fitch"; median ~500 kr, undre kvartil ~250 kr
       Abercrombie Kids: ignorera
@@ -702,7 +706,7 @@ searches:
     catalog: [2052]
     tags: [Jacka]
     max_price: 200
-    min_profit: 120
+    min_profit: 100
     brands:
       Hollister: 270        # median ~300 kr, undre kvartil ~180 kr
     premium_keywords:
@@ -716,7 +720,7 @@ searches:
     catalog: [2052]
     tags: [Jacka]
     max_price: 450
-    min_profit: 420
+    min_profit: 360
     brands:
       J.Lindeberg: 680      # median ~750 kr, undre kvartil ~390 kr; ~40 nya annonser per dygn
 
@@ -728,7 +732,7 @@ searches:
     tags: [Tröja]
     min_price: 220
     max_price: 960
-    min_profit: 530
+    min_profit: 450
     suspicious_below: 500   # kolla filtmärket och QR/NFC-etiketten
     brands:
       Moncler: 1160         # median ~1 290 kr, undre kvartil ~750 kr
@@ -738,7 +742,7 @@ searches:
     catalog: [79]
     tags: [Tröja]
     max_price: 700
-    min_profit: 460
+    min_profit: 390
     suspicious_below: 290
     brands:
       Acne Studios: 850     # median ~940 kr, undre kvartil ~650 kr
@@ -749,7 +753,7 @@ searches:
     tags: [Tröja, Skjorta]
     min_price: 140
     max_price: 510
-    min_profit: 240
+    min_profit: 200
     suspicious_below: 270
     brands:
       "C.P. Company": 610   # median ~670 kr, undre kvartil ~450 kr
@@ -761,7 +765,7 @@ searches:
     catalog: [79]
     tags: [Tröja]
     max_price: 640
-    min_profit: 310
+    min_profit: 260
     suspicious_below: 200   # kolla broderiet på hjärtlogan
     brands:
       Ami Paris: 770        # median ~850 kr, undre kvartil ~450 kr
@@ -774,7 +778,7 @@ searches:
     tags: [Tröja]
     min_price: 160
     max_price: 570
-    min_profit: 360
+    min_profit: 310
     suspicious_below: 310
     brands:
       Stone Island: 680     # median ~760 kr, undre kvartil ~520 kr
@@ -788,7 +792,7 @@ searches:
     tags: [Tröja, Skjorta]
     min_price: 120
     max_price: 490
-    min_profit: 290
+    min_profit: 250
     suspicious_below: 230   # rutiga Nova-skjortor kopieras – kolla att rutorna möts i sömmarna
     brands:
       Burberry: 580         # median ~650 kr, undre kvartil ~390 kr
@@ -801,7 +805,7 @@ searches:
     catalog: [79]
     tags: [Tröja]
     max_price: 290
-    min_profit: 270
+    min_profit: 230
     suspicious_below: 110
     brands:
       Ralph Lauren: 350     # median ~390 kr, undre kvartil ~250 kr
@@ -820,7 +824,7 @@ searches:
     catalog: [79]
     tags: [Tröja]
     max_price: 250
-    min_profit: 220
+    min_profit: 190
     brands:
       Abercrombie: 350      # median ~390 kr, undre kvartil ~170 kr
       Abercrombie Kids: ignorera
@@ -835,7 +839,7 @@ searches:
     catalog: [79]
     tags: [Tröja]
     max_price: 190
-    min_profit: 175
+    min_profit: 150
     brands:
       Hollister: 270        # median ~300 kr, undre kvartil ~120 kr
 
@@ -844,7 +848,7 @@ searches:
     catalog: [79]
     tags: [Tröja]
     max_price: 170
-    min_profit: 110
+    min_profit: 90
     brands:
       J.Lindeberg: 240      # median ~200 kr (golftröjor och pikéer), undre kvartil ~150 kr
 
@@ -856,7 +860,7 @@ searches:
     tags: [Tröja]
     min_price: 600
     max_price: 1300
-    min_profit: 500
+    min_profit: 420
     suspicious_below: 1000
     brands:
       Gucci: 1700           # median ~1 900 kr, undre kvartil ~900 kr; ~8 nya annonser per dygn
@@ -867,7 +871,7 @@ searches:
     tags: [Tröja]
     min_price: 500
     max_price: 1500
-    min_profit: 600
+    min_profit: 510
     suspicious_below: 1000
     brands:
       Balenciaga: 2050      # median ~2 280 kr, undre kvartil ~1 340 kr
@@ -879,7 +883,7 @@ searches:
     catalog: [257]
     tags: [Jeans]
     max_price: 600
-    min_profit: 360
+    min_profit: 310
     suspicious_below: 250
     brands:
       Jacob Cohën: 720      # median ~800 kr, undre kvartil ~550 kr
@@ -889,7 +893,7 @@ searches:
     catalog: [257]
     tags: [Jeans]
     max_price: 520
-    min_profit: 180
+    min_profit: 150
     brands:
       A.P.C.: 630           # median ~700 kr, undre kvartil ~450 kr
     premium_keywords:
@@ -901,7 +905,7 @@ searches:
     catalog: [257, 34]
     tags: [Jeans, Byxor]
     max_price: 300
-    min_profit: 220
+    min_profit: 190
     brands:
       Acne Studios: 360     # median ~400 kr, undre kvartil ~230 kr
     premium_keywords:
@@ -915,6 +919,6 @@ searches:
     catalog: [257]
     tags: [Jeans]
     max_price: 330
-    min_profit: 150
+    min_profit: 130
     brands:
       Tramarossa: 450       # median ~500 kr, undre kvartil ~300 kr
