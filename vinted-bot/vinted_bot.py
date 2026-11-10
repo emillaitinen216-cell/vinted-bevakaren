@@ -1541,6 +1541,9 @@ class Store:
                 ts INTEGER, checks INTEGER NOT NULL DEFAULT 0, status TEXT,
                 PRIMARY KEY (chat_id, message_id));
         """)
+        if "max_price" not in {row[1] for row in self.db.execute("PRAGMA table_info(watches)")}:
+            self.db.execute("ALTER TABLE watches ADD COLUMN max_price REAL")  # /bevaka … max 800
+            self.db.commit()
         if "sold_after" not in {row[1] for row in self.db.execute("PRAGMA table_info(sent)")}:
             self.db.execute("ALTER TABLE sent ADD COLUMN sold_after INTEGER")  # sekunder från fynd till såld
             # Förr kollades fynden efter 1, 6 och 24 timmar – samma antal gjorda kollar i det nya schemat,
@@ -1738,9 +1741,9 @@ class Store:
 
     MAX_WATCHES = 10  # per person
 
-    def add_watch(self, user_id: int, query: str, sizes: list[str]) -> None:
-        self.db.execute("INSERT INTO watches (user_id, query, sizes, created) VALUES (?, ?, ?, ?)",
-                        (user_id, query, ",".join(sizes), int(time.time())))
+    def add_watch(self, user_id: int, query: str, sizes: list[str], max_price: float | None = None) -> None:
+        self.db.execute("INSERT INTO watches (user_id, query, sizes, created, max_price) VALUES (?, ?, ?, ?, ?)",
+                        (user_id, query, ",".join(sizes), int(time.time()), max_price))
         self.db.execute("UPDATE watches SET active = 1 WHERE user_id = ?", (user_id,))  # boten får skriva igen
         self.db.commit()
 
@@ -1751,6 +1754,11 @@ class Store:
         else:
             rows = self.db.execute("SELECT id, user_id, query, sizes FROM watches WHERE user_id = ? ORDER BY id", (user_id,))
         return [(i, u, q, [x for x in (z or "").split(",") if x]) for i, u, q, z in rows]
+
+    def watch_max_prices(self, user_id: int | None = None) -> dict[int, float]:
+        """Bevakning -> maxpris, för de bevakningar som har ett."""
+        sql = "SELECT id, max_price FROM watches WHERE max_price IS NOT NULL" + (" AND user_id = ?" if user_id else "")
+        return dict(self.db.execute(sql, (user_id,) if user_id else ()).fetchall())
 
     def watches_paused(self, user_id: int) -> bool:
         return bool(self.db.execute("SELECT 1 FROM watches WHERE user_id = ? AND active = 0 LIMIT 1", (user_id,)).fetchone())
@@ -2129,6 +2137,14 @@ def parse_watch(arg: str) -> tuple[str, list[str]] | None:
     return query, sizes
 
 
+def split_max_price(arg: str) -> tuple[str, float | None]:
+    """"Colmar L max 800" -> ("Colmar L", 800). Även "under 800" och "<800"."""
+    m = re.search(r"(?:^|\s)(?:max|maxpris|under|<)\s*(\d{2,6})\s*(?:kr|sek)?\s*$", arg, re.I)
+    if not m:
+        return arg, None
+    return arg[:m.start()].strip(), float(m.group(1))
+
+
 def watch_matches(query: str, sizes: list[str], item: Item) -> bool:
     """Alla sökorden finns i märket eller titeln, och (om storlek angetts) storleken stämmer."""
     found = set(words(f"{item.brand} {item.title}"))
@@ -2141,8 +2157,14 @@ def watch_matches(query: str, sizes: list[str], item: Item) -> bool:
     return any(fold(x) in have for x in sizes)
 
 
-def watch_label(query: str, sizes: list[str]) -> str:
-    return query + (f" ({', '.join(x.upper() for x in sizes)})" if sizes else "")
+def watch_label(query: str, sizes: list[str], max_price: float | None = None) -> str:
+    return (query + (f" ({', '.join(x.upper() for x in sizes)})" if sizes else "")
+            + (f", max {money(max_price)} kr" if max_price else ""))
+
+
+def covered_by_group(query: str, searches: list[Search]) -> bool:
+    """Bevakar gruppen redan märket? Annars söker boten efter det själv (privat bevakning)."""
+    return any((r := s.rule_for(query)) and not r.skip and r is not s.other_brands for s in searches)
 
 
 def watch_help(username: str = "") -> Message:
@@ -2152,6 +2174,8 @@ def watch_help(username: str = "") -> Message:
         "/bevaka Moncler – alla Moncler-fynd",
         "/bevaka Stone Island L – bara storlek L (flera: M/L)",
         "/bevaka dunjacka – ord i titeln går också",
+        "/bevaka Colmar L max 800 – vilket märke som helst, med maxpris",
+        "Märken som inte finns i gruppen söker jag efter själv och skickar bara till dig.",
         "/bevakningar – visa dina bevakningar",
         "/sluta 2 – ta bort nummer 2 (eller /sluta alla)",
         "",
@@ -2322,6 +2346,8 @@ def guide_text(searches: list[Search], cfg: dict) -> str:
         "",
         "<b>Kommandon</b>",
         "<code>/bevaka Moncler L</code> – få Moncler i storlek L privat (flera: M/L, bara märke går också)",
+        "<code>/bevaka Rick Owens max 1500</code> – vilket märke som helst: finns det inte i gruppen söker boten "
+        "efter det själv och skickar bara till dig (utan maxpris: annonser klart under vanligt pris)",
         "<code>/bevakningar</code> – visa dina bevakningar",
         "<code>/sluta 2</code> – ta bort bevakning nr 2 (eller <code>/sluta alla</code>)",
         "<code>/legit</code> + länk – kolla vilken Vinted-annons som helst",
@@ -2763,7 +2789,9 @@ class LegitListener:
         if private and store.watches_paused(user_id) and self.is_member(store, user_id):
             store.resume_watches(user_id)  # skriver till boten igen – då får den skriva tillbaka
         if command == "/bevakningar":
-            lines = [f"{n}. {watch_label(q, z)}" for n, (_, _, q, z) in enumerate(mine, 1)] or ["Du har inga bevakningar än."]
+            maxes = store.watch_max_prices(user_id)
+            lines = [f"{n}. {watch_label(q, z, maxes.get(i))}" + ("" if covered_by_group(q, self.searches) else " (privat sökning)")
+                     for n, (i, _, q, z) in enumerate(mine, 1)] or ["Du har inga bevakningar än."]
             if store.watches_paused(user_id):
                 lines.append("⏸ Pausade – skriv till mig privat för att få fynden igen.")
             self.reply(chat, reply_to, Message("🔔 Dina bevakningar", lines + ["", "Ta bort: /sluta 2 eller /sluta alla"],
@@ -2779,6 +2807,7 @@ class LegitListener:
                 "Skriv /sluta och numret från /bevakningar, t.ex. /sluta 2 (eller /sluta alla)."
             self.reply(chat, reply_to, Message("🔔 Bevakningar", [text], "", buttons=[]), thread)
             return
+        arg, max_price = split_max_price(arg)
         parsed = parse_watch(arg)
         if not parsed:
             self.reply(chat, reply_to, watch_help(self.username), thread)
@@ -2788,11 +2817,14 @@ class LegitListener:
                 f"Du har redan {store.MAX_WATCHES} bevakningar – ta bort en med /sluta först."], "", buttons=[]), thread)
             return
         query, sizes = parsed
-        label = watch_label(query, sizes)
-        confirm = Message("🔔 Bevakning sparad", [f"{label}: du får fynden här, privat, direkt när de kommer.",
+        label = watch_label(query, sizes, max_price)
+        how = ("du får gruppens fynd här, privat, direkt när de kommer." if covered_by_group(query, self.searches) else
+               "märket finns inte i gruppen, så jag söker efter det själv och skickar annonser hit – bara till dig – "
+               + ("som kostar högst så mycket." if max_price else "som ligger klart under vanligt pris."))
+        confirm = Message("🔔 Bevakning sparad", [f"{label}: {how}",
                                                   "Visa alla: /bevakningar · Ta bort: /sluta"], "", buttons=[])
         if private:
-            store.add_watch(user_id, query, sizes)
+            store.add_watch(user_id, query, sizes, max_price)
             self.reply(chat, reply_to, confirm, thread)
             return
         # I gruppen: se först till att boten får skriva privat till personen.
@@ -2803,7 +2835,7 @@ class LegitListener:
                 "till dig privat – skriv sedan /bevaka igen."], "",
                 buttons=[[{"text": "Starta boten", "url": start}]] if start else []), thread)
             return
-        store.add_watch(user_id, query, sizes)
+        store.add_watch(user_id, query, sizes, max_price)
         name = str(user.get("first_name") or "")[:20]
         self.reply(chat, reply_to, Message("🔔 Bevakning sparad", [
             f"Klart{', ' + name if name else ''}! Du får {label} privat."], "", buttons=[]), thread)
@@ -3136,7 +3168,8 @@ class Bot:
         # Sålt-kollen får köra en minut efter tidsgränsen: i molnet lyssnar boten ändå på
         # Telegram ett par minuter till, så det tar ingen tid från sökningarna.
         deadline = started + self.time_budget + 60 if self.time_budget else None
-        for check, what in ((self.check_sold, "om fynden är sålda"), (self.check_follows, "de följda annonserna")):
+        for check, what in ((self.check_sold, "om fynden är sålda"), (self.check_follows, "de följda annonserna"),
+                            (self.check_private_watches, "de privata bevakningarna")):
             try:
                 check(deadline=deadline)
             except Blocked:
@@ -3384,6 +3417,82 @@ class Bot:
         if changed:
             log.info("Justerade vinstgränsen för %d sökningar efter hur fynden säljs: %s", len(changed), ", ".join(changed))
         return changed
+
+    PRIVATE_EVERY = 1200   # varje privat bevakning söks ungefär var 20:e minut
+    PRIVATE_DEAL = 0.6     # utan maxpris: högst 60 % av vad sökordet brukar kosta just nu
+
+    def check_private_watches(self, max_queries: int = 4, deadline: float | None = None) -> int:
+        """/bevaka för märken som gruppen inte bevakar: boten söker själv och skickar bra annonser privat.
+        Inget av det postas i gruppen."""
+        tg = next((n for n in self.notifiers if isinstance(n, TelegramNotifier)), None)
+        if self.dry_run or not self.store or not tg or not hasattr(self.client, "fetch"):
+            return 0
+        maxes = self.store.watch_max_prices()
+        groups: dict[str, list[tuple]] = {}
+        for watch_id, user_id, query, sizes in self.store.watches():
+            if not covered_by_group(query, self.searches):
+                groups.setdefault(" ".join(words(query)), []).append((watch_id, user_id, query, sizes, maxes.get(watch_id)))
+        now = time.time()
+        due = sorted((float(self.store.get_setting(f"pw:last:{k}") or 0), k) for k in groups)
+        due = [k for last, k in due if now - last >= self.PRIVATE_EVERY][:max_queries]
+        catalogs = sorted({c for s in self.searches for c in s.catalog_ids})
+        sent = 0
+        for i, key in enumerate(due):
+            if deadline and time.monotonic() >= deadline:
+                break
+            if i or self.searches:
+                self._pause()
+            name = f"privat:{key}"
+            search = build_search({"name": name, "query": groups[key][0][2], "catalog": catalogs, "resale": 1,
+                                   "max_price": 1_000_000, "min_profit": 0}, self.cfg)
+            try:
+                items = self.client.fetch(search, 1, price_cap=False)
+            except Blocked:
+                raise
+            except FetchError:
+                continue
+            self.store.set_setting(f"pw:last:{key}", str(int(now)))
+            wanted = words(key)
+            items = [it for it in items if all(w in set(words(f"{it.brand} {it.title}")) for w in wanted)]
+            prices = sorted(it.price for it in items)
+            if len(prices) >= 8:
+                self.store.set_setting(f"pw:median:{key}", str(prices[(len(prices) - 1) // 2]))
+            median = float(self.store.get_setting(f"pw:median:{key}") or 0) or None
+            first = not self.store.is_initialized(name)
+            for it in items:
+                if self.store.seen_price(it.id, name) is not None:
+                    continue
+                self.store.mark_seen(it.id, it.price, name)
+                if first:
+                    continue  # första gången: bara spara det som redan finns
+                for watch_id, user_id, query, sizes, max_price in groups[key]:
+                    limit = max_price or (median * self.PRIVATE_DEAL if median else None)
+                    if not limit:
+                        continue
+                    check = build_search({"name": name, "query": query, "catalog": catalogs, "resale": max(limit, median or 0) + 1,
+                                          "max_price": limit, "min_profit": -1e9, "min_roi_percent": -1e9,
+                                          "sizes": sizes}, self.cfg)
+                    deal, _ = evaluate(it, check, self.cfg)
+                    if not deal:
+                        continue
+                    lines = [it.title, f"📏 {it.size or '–'} · {it.condition or 'okänt skick'}"]
+                    if median:
+                        lines.append(f"📊 \"{query}\" kostar runt {money(median)} kr på Vinted just nu "
+                                     f"({max(0, round((1 - it.price / median) * 100))} % under)")
+                    lines.append(f"🔔 Din privata bevakning: {watch_label(query, sizes, max_price)}")
+                    msg = Message(f"🔔 {it.brand or query} – {money(it.price)} kr", lines, it.url, it.photo)
+                    try:
+                        tg.send_private(str(user_id), msg)
+                        sent += 1
+                    except NotifyError as e:
+                        if e.status == 403 or "chat not found" in e.description.lower():
+                            self.store.pause_watches(user_id)
+                        log.warning("Kunde inte skicka en privat bevakning (%s)", e.status)
+                    except Exception as e:
+                        log.warning("Kunde inte skicka en privat bevakning (%s)", type(e).__name__)
+            if first:
+                self.store.set_initialized(name)
+        return sent
 
     def check_follows(self, max_checks: int = 5, deadline: float | None = None) -> int:
         """Kollar annonser som medlemmar följer (/följ): prissänkt eller såld -> privat meddelande."""

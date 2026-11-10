@@ -308,6 +308,10 @@ kopieras har en egen varning. Redan sålda annonser skickas inte alls. Tryck på
 - `/bevaka Moncler` – alla Moncler-fynd
 - `/bevaka Stone Island L` – bara storlek L (flera storlekar: `M/L`)
 - `/bevaka dunjacka` – ord i titeln går också
+- `/bevaka Rick Owens max 1500` – vilket märke som helst, även sådana som gruppen inte
+  bevakar. Då söker boten efter märket själv, ungefär var 20:e minut, och skickar nya
+  annonser privat – aldrig i gruppen – när de kostar högst maxpriset, eller utan maxpris
+  när de ligger minst 40 % under vad märket brukar kosta på Vinted just nu.
 - `/bevakningar` visar dina bevakningar, `/sluta 2` tar bort nummer 2 och
   `/sluta alla` tar bort alla.
 

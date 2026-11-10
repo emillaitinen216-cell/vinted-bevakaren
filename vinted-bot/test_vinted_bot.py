@@ -2179,7 +2179,7 @@ class MoreGroupFeatureTests(unittest.TestCase):
         self.assertEqual(self.store.watches(7), [(1, 7, "Moncler", ["l"])])
         (dm_method, dm), (_, group_reply) = self.sent
         self.assertEqual((dm["chat_id"], dm_method), ("7", "sendMessage"))
-        self.assertIn("Moncler (L): du får fynden här", dm["text"])
+        self.assertIn("Moncler (L): märket finns inte i gruppen", dm["text"])   # lyssnaren har inga sökningar här
         self.assertIn("Klart, Emil! Du får Moncler (L) privat.", group_reply["text"])
 
     def test_bevaka_needs_the_bot_started_first(self):
@@ -2206,7 +2206,8 @@ class MoreGroupFeatureTests(unittest.TestCase):
         for n, text in enumerate(("/bevaka Moncler", "/bevaka Stone Island L", "/bevaka dunjacka"), 1):
             self.say(listener, n, 7, text, chat_type="private")
         self.say(listener, 10, 7, "/bevakningar", chat_type="private")
-        self.assertIn("1. Moncler\n2. Stone Island (L)\n3. dunjacka", self.sent[-1][1]["text"])
+        self.assertIn("1. Moncler (privat sökning)\n2. Stone Island (L) (privat sökning)\n3. dunjacka (privat sökning)",
+                      self.sent[-1][1]["text"])
         self.say(listener, 11, 7, "/sluta 2", chat_type="private")
         self.assertEqual([w[2] for w in self.store.watches(7)], ["Moncler", "dunjacka"])
         self.say(listener, 12, 7, "/sluta alla", chat_type="private")
@@ -2536,6 +2537,46 @@ class RemoveUnwatchedTests(unittest.TestCase):
             self.assertEqual(bot.remove_unwatched_deals(tg), 0)             # bara en gång
         self.assertEqual(sorted((c["chat_id"], c["message_id"]) for c in calls), [("-1001", 2), ("-1001", 3), ("7", 9)])
         self.assertIn("1 nekades av Telegram (Bad Request: message can't be deleted)", logs.output[0])
+
+
+class PrivateWatchTests(unittest.TestCase):
+    def test_split_max_price(self):
+        self.assertEqual(vb.split_max_price("Colmar L max 800"), ("Colmar L", 800.0))
+        self.assertEqual(vb.split_max_price("Colmar under 800 kr"), ("Colmar", 800.0))
+        self.assertEqual(vb.split_max_price("Levis 501"), ("Levis 501", None))
+
+    def test_covered_by_group(self):
+        cfg, searches = vb.load_config(Path(vb.HERE / "config.yaml"))
+        self.assertTrue(vb.covered_by_group("Moncler", searches))
+        self.assertTrue(vb.covered_by_group("Stone Island", searches))
+        self.assertFalse(vb.covered_by_group("Rick Owens", searches))
+
+    def test_unknown_brand_is_searched_and_sent_privately_only(self):
+        store = vb.Store(":memory:")
+        self.addCleanup(store.db.close)
+        cfg = make_cfg()
+        store.add_watch(7, "Rick Owens", [])
+        store.add_watch(8, "Rick Owens", ["l"], max_price=1000)
+        store.add_watch(9, "Nudie", [])                                    # finns i gruppen – ingen egen sökning
+        client = FakeClient()
+        normal = [item(id=i, brand="Rick Owens", title="Rick Owens hoodie", price=2000, size="M") for i in range(1, 9)]
+        client.pages = {1: normal}
+        sent = []
+        with mock.patch.object(vb, "http_post_json", side_effect=lambda url, payload, timeout=20: sent.append(payload) or
+                               {"ok": True, "result": {"message_id": 1}}):
+            tg = vb.TelegramNotifier(TOKEN, "-1001", store=store)
+            bot = vb.Bot(cfg, [make_search(cfg)], client, store, [tg])
+            self.assertEqual(bot.check_private_watches(), 0)                  # första gången: bara spara
+            for key in ("rick owens",):
+                store.set_setting(f"pw:last:{key}", "0")
+            client.pages = {1: [item(id=20, brand="Rick Owens", title="Rick Owens dunjacka", price=900, size="L"),
+                                item(id=21, brand="Rick Owens", title="Rick Owens tee", price=1900, size="L")] + normal}
+            self.assertEqual(bot.check_private_watches(), 2)
+        texts = [p.get("caption") or p.get("text") for p in sent]
+        self.assertEqual([p["chat_id"] for p in sent], ["7", "8"])           # inget till gruppen
+        self.assertIn("🔔 Rick Owens – 900 kr", texts[0])
+        self.assertIn("kostar runt 2 000 kr på Vinted just nu (55 % under)", texts[0])
+        self.assertIn("Din privata bevakning: Rick Owens (L), max 1 000 kr", texts[1])
 
 
 if __name__ == "__main__":
