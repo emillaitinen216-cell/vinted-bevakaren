@@ -12,7 +12,7 @@ Färdiga sökningar finns för:
   C.P. Company, Ralph Lauren, Acne Studios, Barbour, Fjällräven), Barbour och
   "field jacket"/M65
 - **Dunjackor:** Moncler, Canada Goose, Arc'teryx, Parajumpers, Fjällräven,
-  Patagonia, J.Lindeberg och Moose Knuckles
+  Patagonia, J.Lindeberg, Colmar och Moose Knuckles
 - **Jackor och rockar:** Stone Island, C.P. Company, Burberry, Prada, Arc'teryx,
   Herno, Ralph Lauren, Woolrich, Patagonia, J.Lindeberg,
   Abercrombie & Fitch och Hollister

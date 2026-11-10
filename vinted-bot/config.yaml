@@ -500,6 +500,15 @@ searches:
     brands:
       J.Lindeberg: 950      # median ~1 060 kr, undre kvartil ~500 kr; ~10 nya annonser per dygn
 
+  - name: Colmar
+    query: colmar
+    catalog: [1206]
+    tags: [Dunjacka]
+    max_price: 600
+    min_profit: 520
+    brands:
+      Colmar: 900           # median ~1 000 kr, mitten-hälften 600–1 500 kr; ~27 nya annonser per dygn
+
   # ---------------- Fler jackor (Jackor 2052 / Kappor & jackor 1206) ----------------
   #
   # Kalibrerade mot annonspriserna på vinted.se i oktober 2026. "kolla äkthet"-gränsen
