@@ -2028,7 +2028,8 @@ class MoreGroupFeatureTests(unittest.TestCase):
         self.assertEqual(client.searched, ["A", "D", "B", "A", "C", "D"])
         self.assertEqual(self.store.get_setting("next_search"), "0")
         shipped = [s.name for s in vb.load_config(Path(vb.HERE / "config.yaml"))[1] if s.hot]
-        self.assertEqual(shipped, ["Moncler", "Canada Goose", "Stone Island jackor"])
+        self.assertEqual(shipped, ["Moncler", "Canada Goose", "Parajumpers", "Stone Island jackor", "C.P. Company jackor",
+                                   "Arc'teryx jackor", "Stone Island tröjor", "Ralph Lauren tröjor"])
 
     # --- tyst natt ---
 
@@ -2577,6 +2578,30 @@ class PrivateWatchTests(unittest.TestCase):
         self.assertIn("🔔 Rick Owens – 900 kr", texts[0])
         self.assertIn("kostar runt 2 000 kr på Vinted just nu (55 % under)", texts[0])
         self.assertIn("Din privata bevakning: Rick Owens (L), max 1 000 kr", texts[1])
+
+
+class SpareTimeTests(unittest.TestCase):
+    def test_hot_searches_run_again_until_the_spare_time_is_used(self):
+        store = vb.Store(":memory:")
+        self.addCleanup(store.db.close)
+        cfg = make_cfg()
+        searches = [make_search(cfg, name=n, hot=(n == "A")) for n in ("A", "B")]
+        client = NamedClient()
+        bot = vb.Bot(cfg, searches, client, store, [])
+        clock = [0.0]
+
+        def tick():
+            clock[0] += 10
+            return clock[0]
+
+        with mock.patch.object(vb.time, "monotonic", side_effect=tick), mock.patch.object(bot, "_pause"):
+            bot.spare_end = 200
+            with self.assertLogs("vinted-bot", "INFO"):
+                bot.use_spare_time()
+        self.assertGreaterEqual(client.searched.count("A"), 3)
+        self.assertNotIn("B", client.searched)
+        bot.spare_end = None
+        self.assertEqual(bot.use_spare_time(), 0)                        # lokalt, utan --lyssna: ingen extra tid
 
 
 if __name__ == "__main__":

@@ -320,9 +320,11 @@ göra en gång. Glömmer man det säger boten till, med en knapp att trycka på.
 Kommandona fungerar både i gruppen och i den privata chatten med boten, men
 bara för medlemmar i gruppen. Varje person kan ha 10 bevakningar.
 
-**⚡ Toppmärken söks oftare.** Sökningar med `hot: true` (Moncler, Canada Goose
-och Stone Island jackor) körs två gånger per varv, eftersom de bästa fynden
-säljs på minuter.
+**⚡ Toppmärken söks oftare.** Sökningar med `hot: true` (Moncler, Canada Goose,
+Parajumpers, Stone Island, C.P. Company jackor, Arc'teryx jackor och Ralph Lauren
+tröjor) körs två gånger per varv. I molnet söks de dessutom igen i minuterna som blir
+över innan nästa körning, ungefär var 2–3:e minut, eftersom de bästa fynden säljs på
+minuter. Då kollas även de privata bevakningarna, ungefär var 10:e minut.
 
 **🌙 Tyst natt.** Fynd mellan kl. 23 och 07 kommer utan ljud. Tiderna ändras
 med `quiet_hours` i `config.yaml` (`false` stänger av).

@@ -198,7 +198,7 @@ auto_tune: true
 #   tags          hashtaggar i notisen, t.ex. [Jeans] → #Jeans (märket blir alltid en hashtagg).
 #                 Tryck på en hashtagg i Telegram för att se alla notiser med den.
 #   enabled       false = pausa sökningen
-#   hot           true = toppmärke som söks två gånger per varv (de bästa fynden säljs på minuter)
+#   hot           true = toppmärke som söks oftare: två gånger per varv, och igen i tiden som blir över
 # --------------------------------------------------------------------------
 
 searches:
@@ -414,7 +414,7 @@ searches:
   # ---------------- Dunjackor (Dunjackor 2536 + Kappor 2051) ----------------
 
   - name: Moncler
-    hot: true             # toppmärke: söks två gånger per varv
+    hot: true             # toppmärke: söks oftare
     query: moncler
     catalog: [2536, 2051]
     tags: [Dunjacka]
@@ -428,7 +428,7 @@ searches:
       maya: 800
 
   - name: Canada Goose
-    hot: true             # toppmärke: söks två gånger per varv
+    hot: true             # toppmärke: söks oftare
     query: canada goose
     catalog: [2536, 2051]
     tags: [Dunjacka]
@@ -456,6 +456,7 @@ searches:
       cerium: 200
 
   - name: Parajumpers
+    hot: true             # toppmärke: söks oftare
     query: parajumpers
     catalog: [2536, 2051]
     tags: [Dunjacka]
@@ -515,7 +516,7 @@ searches:
   # (suspicious_below) är satt högt för märken som ofta kopieras.
 
   - name: Stone Island jackor
-    hot: true             # toppmärke: söks två gånger per varv
+    hot: true             # toppmärke: söks oftare
     query: stone island
     catalog: [2052]
     tags: [Jacka]
@@ -530,6 +531,7 @@ searches:
       shadow project: 600
 
   - name: C.P. Company jackor
+    hot: true             # toppmärke: söks oftare
     query: c.p. company
     catalog: [2052]
     tags: [Jacka]
@@ -585,6 +587,7 @@ searches:
       Moose Knuckles: 3000  # median ~3 330 kr, undre kvartil ~1 850 kr
 
   - name: Arc'teryx jackor
+    hot: true             # toppmärke: söks oftare
     query: arc'teryx
     catalog: [2052]
     tags: [Jacka]
@@ -743,6 +746,7 @@ searches:
       AMI: 770              # märket heter ibland bara "AMI" på Vinted
 
   - name: Stone Island tröjor
+    hot: true             # toppmärke: söks oftare
     query: stone island
     catalog: [79]
     tags: [Tröja]
@@ -770,6 +774,7 @@ searches:
       Thomas Burberry: ignorera
 
   - name: Ralph Lauren tröjor
+    hot: true             # toppmärke: söks oftare
     query: ralph lauren
     catalog: [79]
     tags: [Tröja]

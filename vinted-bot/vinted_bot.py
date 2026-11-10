@@ -2944,6 +2944,7 @@ class Bot:
         self.block_cooldown = 0.0
         self.block_pauses = 2
         self._cycle_started, self._inspect_off = time.monotonic(), False  # för kopierisk-kollen
+        self.spare_end: float | None = None  # i molnet: sök toppmärkena igen fram till dess (monotonic)
 
     def _pause(self) -> None:
         low, high = self.cfg["delay_between_searches"]
@@ -3176,7 +3177,37 @@ class Bot:
                 break  # Vinted spärrar just nu – kollas nästa varv
             except Exception:
                 log.exception("Kunde inte kolla %s", what)
+        try:
+            self.use_spare_time()
+        except Blocked:
+            pass  # Vinted spärrar – nästa körning tar vid
+        except Exception:
+            log.exception("Kunde inte använda den lediga tiden")
         return total
+
+    def use_spare_time(self) -> int:
+        """Tiden som blir över innan körningen slutar (i molnet lyssnar boten ändå på Telegram):
+        toppmärkena (hot: true) söks igen och de privata bevakningarna kollas. Samma lugna tempo mot Vinted."""
+        hot = [s for s in self.searches if s.hot]
+        if not self.spare_end or not hot or self.dry_run:
+            return 0
+        rounds = found = 0
+        while time.monotonic() + 30 < self.spare_end:
+            for search in hot:
+                if time.monotonic() + 15 >= self.spare_end:
+                    break
+                self._pause()
+                try:
+                    found += self.run_search(search)
+                except Blocked:
+                    raise
+                except FetchError:
+                    continue
+            rounds += 1
+            self.check_private_watches(deadline=self.spare_end)
+        if rounds:
+            log.info("Sökte toppmärkena %d gånger till i den lediga tiden (%d fynd).", rounds, found)
+        return found
 
     def topic_names(self) -> list[str]:
         names = list(self.info_pages()) + [str(name) for name in self.cfg.get("topics") or {}]
@@ -3418,7 +3449,7 @@ class Bot:
             log.info("Justerade vinstgränsen för %d sökningar efter hur fynden säljs: %s", len(changed), ", ".join(changed))
         return changed
 
-    PRIVATE_EVERY = 1200   # varje privat bevakning söks ungefär var 20:e minut
+    PRIVATE_EVERY = 540    # varje privat bevakning söks ungefär var 10:e minut
     PRIVATE_DEAL = 0.6     # utan maxpris: högst 60 % av vad sökordet brukar kosta just nu
 
     def check_private_watches(self, max_queries: int = 4, deadline: float | None = None) -> int:
@@ -3748,6 +3779,8 @@ def main(argv: list[str] | None = None) -> int:
         bot.block_cooldown = 75.0  # bara om tidsgränsen räcker, se Bot._run_search_or_wait
     listener = None
     until = started + args.listen if args.once and args.listen else None
+    if until:
+        bot.spare_end = until - 45  # lämna tid till dagens bästa och att spara databasen
     if listen:
         listener = threading.Thread(
             target=LegitListener(token, db_path, cfg, searches, load_legit_tips(HERE / "legit_tips.yaml"),
