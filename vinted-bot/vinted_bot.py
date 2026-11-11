@@ -753,6 +753,34 @@ def http_post_json(url: str, payload: dict, timeout: float = 20):
     return json.loads(body) if body else None
 
 
+DISCORD_API = "https://discord.com/api/v10"
+
+
+def discord_api(token: str, method: str, path: str, payload: dict | None = None, timeout: float = 20):
+    """Anropar Discords API som boten (DISCORD_BOT_TOKEN). Kastar NotifyError med Discords förklaring."""
+    req = urllib.request.Request(
+        DISCORD_API + path, method=method,
+        data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+        headers={"Authorization": f"Bot {token}", "Content-Type": "application/json",
+                 "User-Agent": "DiscordBot (https://github.com, 1.0) vinted-bevakare"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        raise NotifyError(e.code, e.read().decode("utf-8", "replace")[:300]) from None
+    return json.loads(body) if body else None
+
+
+def discord_channel(token: str, name: str, guild_id: str | None = None) -> str | None:
+    """Id för textkanalen med det namnet på bottens server (den enda, eller guild_id)."""
+    guilds = [str(g["id"]) for g in discord_api(token, "GET", "/users/@me/guilds") or []]
+    for guild in ([guild_id] if guild_id else guilds):
+        for channel in discord_api(token, "GET", f"/guilds/{guild}/channels") or []:
+            if channel.get("type") == 0 and channel.get("name") == name:
+                return str(channel["id"])
+    return None
+
+
 def member_status_ok(info: dict) -> bool:
     """getChatMember: med i gruppen? "restricted" räknas bara om personen inte har lämnat."""
     status = info.get("status") if isinstance(info, dict) else None
@@ -1072,6 +1100,13 @@ def rights_hint(description: str, url: str) -> Message:
     ], url)
 
 
+def discord_embed(msg: Message) -> dict:
+    embed = {"title": msg.title[:256], "url": msg.url, "description": "\n".join(msg.lines)[:4000], "color": 0x09B1BA}
+    if msg.photo:
+        embed["image"] = {"url": msg.photo}
+    return embed
+
+
 class DiscordNotifier:
     name = "Discord"
 
@@ -1079,10 +1114,7 @@ class DiscordNotifier:
         self.webhook = webhook
 
     def send(self, msg: Message) -> None:
-        embed = {"title": msg.title[:256], "url": msg.url, "description": "\n".join(msg.lines)[:4000], "color": 0x09B1BA}
-        if msg.photo:
-            embed["image"] = {"url": msg.photo}
-        http_post_json(self.webhook, {"embeds": [embed]})
+        http_post_json(self.webhook, {"embeds": [discord_embed(msg)]})
 
 
 class NtfyNotifier:
@@ -3813,7 +3845,8 @@ class Bot:
         """Smakprov i en gratis Discord-kanal: ett fynd som redan är sålt, med länk för att gå med.
         Kräver DISCORD_TEASER_WEBHOOK. Bara sålda fynd, så att ingen får fynden gratis."""
         hook = os.environ.get("DISCORD_TEASER_WEBHOOK") or str(self.cfg.get("discord_teaser_webhook") or "").strip()
-        if not hook or not self.store or self.dry_run:
+        bot_token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+        if not (hook or bot_token) or not self.store or self.dry_run:
             return False
         now = now or time.time()
         if now - sent_at > 86400:
@@ -3834,8 +3867,23 @@ class Bot:
                  "Medlemmarna i Telegram-gruppen fick fyndet direkt när det lades upp."]
         if link:
             lines.append(f"👉 Få fynden direkt: {link}")
-        DiscordNotifier(hook).send(Message(f"❌ SÅLD {within(now - sent_at)} – {brand or 'Fynd'}", lines,
-                                           link or f"https://www.{self.cfg['domain']}/"))
+        msg = Message(f"❌ SÅLD {within(now - sent_at)} – {brand or 'Fynd'}", lines,
+                      link or f"https://www.{self.cfg['domain']}/")
+        if hook:
+            DiscordNotifier(hook).send(msg)
+        else:  # boten från "Bygg Discord-servern": skriv i kanalen #sålda-fynd
+            channel = self.store.get_setting("discord:teaser_channel") or discord_channel(
+                bot_token, str(self.cfg.get("discord_teaser_channel") or "sålda-fynd"), os.environ.get("DISCORD_GUILD_ID"))
+            if not channel:
+                log.warning("Discord: hittar ingen kanal som heter #sålda-fynd – kör Bygg Discord-servern.")
+                return False
+            self.store.set_setting("discord:teaser_channel", channel)
+            try:
+                discord_api(bot_token, "POST", f"/channels/{channel}/messages", {"embeds": [discord_embed(msg)]})
+            except NotifyError as e:
+                if e.status == 404:
+                    self.store.set_setting("discord:teaser_channel", "")  # kanalen borttagen – leta igen nästa gång
+                raise
         self.store.set_setting(key, str(count + 1))
         log.info("Discord: skickade ett smakprov.")
         return True

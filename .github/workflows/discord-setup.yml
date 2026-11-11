@@ -1,0 +1,43 @@
+# Bygg Discord-servern: skapar kanaler, regler och färdiga texter i din Discord-server.
+#
+# 1. Skapa en tom server i Discord och bjud in din Discord-bot med rätten Administratör.
+# 2. Lägg botens token som hemligheten DISCORD_BOT_TOKEN (Settings › Secrets and variables › Actions).
+# 3. Actions › Bygg Discord-servern › Run workflow.
+# Går att köra igen: kanaler som redan finns lämnas orörda.
+name: Bygg Discord-servern
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bygg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: vinted-bot
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: vinted-bot/requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      # Bara för att läsa ansökningslänken (/lank) – databasen sparas inte tillbaka härifrån.
+      - uses: actions/cache/restore@v4
+        with:
+          path: vinted-bot/vinted_bot.db
+          key: vinted-db-discord-${{ github.run_id }}
+          restore-keys: vinted-db-
+
+      - name: Skapa kanalerna
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: python discord_setup.py

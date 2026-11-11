@@ -2927,5 +2927,63 @@ class JoinRequestTests(unittest.TestCase):
         self.assertEqual(self.store.join_request(7)[2], "insläppt")
         self.assertNotIn("copyMessage", [m for m, _ in self.sent])
 
+class DiscordSetupTests(unittest.TestCase):
+    """Bygg Discord-servern: kanaler, låsta infokanaler och texter, och smakprov via boten."""
+
+    def fake_discord(self, existing=()):
+        calls, ids = [], iter(range(1000, 2000))
+        channels = list(existing)
+
+        def api(token, method, path, payload=None, timeout=20):
+            calls.append((method, path, payload))
+            if path == "/users/@me/guilds":
+                return [{"id": "9"}]
+            if method == "GET" and path.endswith("/channels"):
+                return channels
+            if method == "POST":
+                made = {"id": str(next(ids)), **(payload or {})}
+                if path.endswith("/channels"):
+                    channels.append(made)
+                return made
+            return None
+        return api, calls
+
+    def test_builds_channels_once_with_locked_info_and_texts(self):
+        import discord_setup
+        api, calls = self.fake_discord()
+        created = discord_setup.build("tok", None, "https://t.me/+ansok", api=api)
+        self.assertEqual(created, ["välkommen", "regler", "vip-telegram", "sålda-fynd", "snack", "legit-check",
+                                   "mina-vinster", "köp-sälj-byt", "tips"])
+        made = {p["name"]: p for m, path, p in calls if m == "POST" and path.endswith("/channels")}
+        self.assertEqual(made["regler"]["permission_overwrites"],
+                         [{"id": "9", "type": 0, "deny": str(discord_setup.READ_ONLY)}])
+        self.assertNotIn("permission_overwrites", made["snack"])
+        posts = [p["content"] for m, path, p in calls if m == "POST" and path.endswith("/messages")]
+        vip = next(t for t in posts if "VIP" in t)
+        self.assertIn("https://t.me/+ansok", vip)
+        self.assertNotIn("<#sålda-fynd>", vip)                              # blev en riktig kanallänk
+        self.assertEqual(len([c for c in calls if c[0] == "PUT"]), len(posts))  # alla texter fästs
+        calls.clear()
+        self.assertEqual(discord_setup.build("tok", None, "", api=api), [])    # andra gången: inget nytt
+        self.assertEqual([c for c in calls if c[0] != "GET"], [])
+
+    def test_teaser_goes_to_the_sold_channel_with_the_bot(self):
+        cfg = make_cfg()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = vb.Store(Path(tmp.name) / "bot.db")
+        self.addCleanup(store.db.close)
+        store.db.execute("INSERT INTO deals VALUES (?,?,?,?,?,?,?,?,?,?)",
+                         (42, int(time.time()), "S", "Moncler", "Moncler Maya", 900, 1000, 2200, 1100, "u"))
+        api, calls = self.fake_discord([{"id": "77", "type": 0, "name": "sålda-fynd"}])
+        bot = vb.Bot(cfg, [], FakeClient(), store, [])
+        with mock.patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "tok"}), mock.patch.object(vb, "discord_api", api):
+            os.environ.pop("DISCORD_TEASER_WEBHOOK", None)
+            self.assertTrue(bot.teaser(42, time.time() - 240, "-1001"))
+        method, path, payload = calls[-1]
+        self.assertEqual((method, path), ("POST", "/channels/77/messages"))
+        self.assertEqual(payload["embeds"][0]["title"], "❌ SÅLD inom 5 min – Moncler")
+        self.assertEqual(store.get_setting("discord:teaser_channel"), "77")
+
 if __name__ == "__main__":
     unittest.main()

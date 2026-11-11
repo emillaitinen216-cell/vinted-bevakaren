@@ -90,6 +90,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_TEASER_WEBHOOK: ${{ secrets.DISCORD_TEASER_WEBHOOK }} # smakprov: sålda fynd i en gratis Discord
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }} # eller via boten från Bygg Discord-servern
 
       - uses: actions/cache/save@v4
         if: always() && (steps.bot.outcome == 'success' || steps.bot.outcome == 'failure')

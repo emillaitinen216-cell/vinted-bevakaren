@@ -391,6 +391,21 @@ webhook i Discord-kanalen (Redigera kanal › Integrationer › Webhooks › Ny 
 Kopiera webhook-URL) och lägg in den som hemligheten `DISCORD_TEASER_WEBHOOK` i GitHub
 (eller i `.env`). Utan den skickas inga smakprov.
 
+**🛠️ Bygg Discord-servern automatiskt.** `discord_setup.py` skapar en färdig server för
+resellers: kategorierna INFO, FYND och COMMUNITY med kanalerna #välkommen, #regler,
+#vip-telegram (med ansökningslänken), #sålda-fynd, #snack, #legit-check, #mina-vinster,
+#köp-sälj-byt och #tips. Info-kanalerna är låsta och har en fäst text. Gör så här:
+
+1. Skapa en tom server i Discord (＋ › Skapa min egen).
+2. Gå till <https://discord.com/developers/applications> › *New Application* › fliken *Bot* ›
+   *Reset Token* och kopiera token. Lägg den som hemligheten `DISCORD_BOT_TOKEN` i GitHub.
+3. Fliken *OAuth2* › *URL Generator*: kryssa i `bot` och sedan `Administrator`, öppna länken
+   och välj servern.
+4. *Actions* › *Bygg Discord-servern* › *Run workflow*.
+
+Med `DISCORD_BOT_TOKEN` skickar boten också smakproven till #sålda-fynd själv – då behövs
+ingen webhook.
+
 ### ntfy (enklast, inget konto)
 
 Installera appen [ntfy](https://ntfy.sh) och prenumerera på ett ämne med ett
