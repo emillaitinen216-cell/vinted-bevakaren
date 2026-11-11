@@ -2930,6 +2930,23 @@ class JoinRequestTests(unittest.TestCase):
 class DiscordSetupTests(unittest.TestCase):
     """Bygg Discord-servern: kanaler, låsta infokanaler och texter, och smakprov via boten."""
 
+    def test_rate_limit_waits_and_retries(self):
+        import email.message
+        headers = email.message.Message()
+        replies = [vb.urllib.error.HTTPError("u", 429, "Too Many", headers, io.BytesIO(b'{"retry_after": 0.2}')),
+                   io.BytesIO(b'[{"id": "9"}]')]
+
+        def urlopen(req, timeout=20):
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        with mock.patch.object(vb.urllib.request, "urlopen", urlopen), mock.patch.object(vb.time, "sleep") as sleep, \
+                self.assertLogs("vinted-bot", "INFO"):
+            self.assertEqual(vb.discord_api("tok", "GET", "/users/@me/guilds"), [{"id": "9"}])
+        sleep.assert_called_once_with(0.7)
+
     def fake_discord(self, existing=()):
         calls, ids = [], iter(range(1000, 2000))
         channels = list(existing)
@@ -2951,7 +2968,7 @@ class DiscordSetupTests(unittest.TestCase):
     def test_builds_channels_once_with_locked_info_and_texts(self):
         import discord_setup
         api, calls = self.fake_discord()
-        created = discord_setup.build("tok", None, "https://t.me/+ansok", api=api)
+        created = discord_setup.build("tok", None, "https://t.me/+ansok", api=api, pause=0)
         self.assertEqual(created, ["välkommen", "regler", "vip-telegram", "sålda-fynd", "snack", "legit-check",
                                    "mina-vinster", "köp-sälj-byt", "tips"])
         made = {p["name"]: p for m, path, p in calls if m == "POST" and path.endswith("/channels")}
@@ -2964,7 +2981,7 @@ class DiscordSetupTests(unittest.TestCase):
         self.assertNotIn("<#sålda-fynd>", vip)                              # blev en riktig kanallänk
         self.assertEqual(len([c for c in calls if c[0] == "PUT"]), len(posts))  # alla texter fästs
         calls.clear()
-        self.assertEqual(discord_setup.build("tok", None, "", api=api), [])    # andra gången: inget nytt
+        self.assertEqual(discord_setup.build("tok", None, "", api=api, pause=0), [])    # andra gången: inget nytt
         self.assertEqual([c for c in calls if c[0] != "GET"], [])
 
     def test_teaser_goes_to_the_sold_channel_with_the_bot(self):

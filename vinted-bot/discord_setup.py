@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 import vinted_bot as vb
@@ -107,8 +108,15 @@ def layout(link: str) -> list[tuple[str, list[tuple[str, str, bool, str]]]]:
     ]
 
 
-def build(token: str, guild_id: str | None, link: str, api=vb.discord_api) -> list[str]:
+def build(token: str, guild_id: str | None, link: str, api=vb.discord_api, pause: float = 1.0) -> list[str]:
     """Skapar det som saknas. Returnerar namnen på kanalerna som skapades."""
+    raw_api = api
+
+    def api(*args, **kwargs):  # lugnt tempo – Discord begränsar hur snabbt kanaler får skapas
+        if args[1] != "GET" and pause:
+            time.sleep(pause)
+        return raw_api(*args, **kwargs)
+
     guilds = api(token, "GET", "/users/@me/guilds") or []
     if guild_id is None:
         if len(guilds) != 1:
@@ -169,8 +177,12 @@ def main(argv: list[str] | None = None) -> int:
         created = build(token, os.environ.get("DISCORD_GUILD_ID") or None, link)
     except vb.NotifyError as e:
         hint = {401: "Fel token – kopiera en ny under Bot › Reset Token.",
-                403: "Boten saknar rättigheter – bjud in den med rätten Administratör."}.get(e.status, "")
+                403: "Boten saknar rättigheter – bjud in den med rätten Administratör.",
+                429: "Discord begränsar just nu – vänta en kvart och kör igen. Det som redan skapats ligger kvar."
+                }.get(e.status, "")
         print(f"Discord svarade {e.status}. {hint}")
+        if e.status == 429:  # vad Discord sa (innehåller inga hemligheter) – visar om det är en tillfällig spärr
+            print("Discords svar:", " ".join(e.detail.split())[:200])
         return 1
     print(f"Klart! Skapade {len(created)} kanaler: {', '.join(created) or 'inga nya'}.")
     if not link:

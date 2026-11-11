@@ -763,12 +763,26 @@ def discord_api(token: str, method: str, path: str, payload: dict | None = None,
         data=json.dumps(payload).encode("utf-8") if payload is not None else None,
         headers={"Authorization": f"Bot {token}", "Content-Type": "application/json",
                  "User-Agent": "DiscordBot (https://github.com, 1.0) vinted-bevakare"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read()
-    except urllib.error.HTTPError as e:
-        raise NotifyError(e.code, e.read().decode("utf-8", "replace")[:300]) from None
-    return json.loads(body) if body else None
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read()
+            return json.loads(body) if body else None
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")
+            if e.code != 429 or attempt == 5:
+                raise NotifyError(e.code, detail[:300]) from None
+            # För många anrop: Discord säger hur länge man ska vänta (retry_after i sekunder).
+            try:
+                wait = float(json.loads(detail).get("retry_after") or 0)
+            except (ValueError, AttributeError):
+                wait = 0.0
+            wait = wait or float(e.headers.get("Retry-After") or 0) or 5.0 * (attempt + 1)
+            if wait > 120:
+                raise NotifyError(e.code, detail[:300]) from None
+            log.info("Discord: för många anrop – väntar %.0f s", wait)
+            time.sleep(wait + 0.5)
+    return None
 
 
 def discord_channel(token: str, name: str, guild_id: str | None = None) -> str | None:
