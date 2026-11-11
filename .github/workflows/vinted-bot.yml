@@ -89,6 +89,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_TEASER_WEBHOOK: ${{ secrets.DISCORD_TEASER_WEBHOOK }} # smakprov: sålda fynd i en gratis Discord
 
       - uses: actions/cache/save@v4
         if: always() && (steps.bot.outcome == 'success' || steps.bot.outcome == 'failure')

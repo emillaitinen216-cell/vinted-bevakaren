@@ -383,6 +383,14 @@ tagit flest fynd med *🙋 Jag tar den*. Tiden ändras med `daily_summary_hour`
 (`false` stänger av dagens bästa), och `weekly_report: false` stänger av
 veckorapporten.
 
+**📣 Smakprov i Discord.** Har du en gratis Discord-server kan boten visa upp gruppen där:
+när ett fynd har sålts skickas det till en Discord-kanal, t.ex. *❌ SÅLD inom 15 min –
+Moncler* med pris, möjlig vinst och ansökningslänken (från `/lank`). Bara sålda fynd, och
+bara de som såldes inom ett dygn, så ingen får fynden gratis. Högst 12 per dag. Skapa en
+webhook i Discord-kanalen (Redigera kanal › Integrationer › Webhooks › Ny webhook ›
+Kopiera webhook-URL) och lägg in den som hemligheten `DISCORD_TEASER_WEBHOOK` i GitHub
+(eller i `.env`). Utan den skickas inga smakprov.
+
 ### ntfy (enklast, inget konto)
 
 Installera appen [ntfy](https://ntfy.sh) och prenumerera på ett ämne med ett

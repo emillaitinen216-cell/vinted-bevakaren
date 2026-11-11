@@ -3798,9 +3798,47 @@ class Bot:
                 continue
             marked += bool(status)
             self.store.sold_checked(item_id, status)
+            if status == "SÅLD":
+                try:
+                    self.teaser(item_id, min(m[6] for m in messages), str(tg[0].chat_id))
+                except Exception as e:  # smakprovet får aldrig stoppa kollarna
+                    log.warning("Discord: kunde inte skicka smakprovet (%s)", type(e).__name__)
         if marked:
             log.info("Markerade %d fynd som sålda.", marked)
         return marked
+
+    TEASERS_PER_DAY = 12
+
+    def teaser(self, item_id: int, sent_at: float, group: str, now: float | None = None) -> bool:
+        """Smakprov i en gratis Discord-kanal: ett fynd som redan är sålt, med länk för att gå med.
+        Kräver DISCORD_TEASER_WEBHOOK. Bara sålda fynd, så att ingen får fynden gratis."""
+        hook = os.environ.get("DISCORD_TEASER_WEBHOOK") or str(self.cfg.get("discord_teaser_webhook") or "").strip()
+        if not hook or not self.store or self.dry_run:
+            return False
+        now = now or time.time()
+        if now - sent_at > 86400:
+            return False  # sålt efter mer än ett dygn – inget att visa upp
+        row = self.store.db.execute("SELECT brand, title, price, resale, profit FROM deals WHERE item_id = ? "
+                                    "ORDER BY ts DESC LIMIT 1", (item_id,)).fetchone()
+        if not row or not row[4] or row[4] <= 0:
+            return False
+        key = f"teaser:{datetime.now(STOCKHOLM).date().isoformat()}"
+        count = int(self.store.get_setting(key) or 0)
+        if count >= self.TEASERS_PER_DAY:
+            return False
+        brand, title, price, resale, profit = row
+        link = self.store.get_setting(f"join:link:{group}") or ""
+        lines = [str(title or "")[:90],
+                 f"Pris: {money(price)} kr · säljs för ca {money(resale)} kr",
+                 f"Möjlig vinst: ≈ +{money(profit)} kr", "",
+                 "Medlemmarna i Telegram-gruppen fick fyndet direkt när det lades upp."]
+        if link:
+            lines.append(f"👉 Få fynden direkt: {link}")
+        DiscordNotifier(hook).send(Message(f"❌ SÅLD {within(now - sent_at)} – {brand or 'Fynd'}", lines,
+                                           link or f"https://www.{self.cfg['domain']}/"))
+        self.store.set_setting(key, str(count + 1))
+        log.info("Discord: skickade ett smakprov.")
+        return True
 
     def daily_summary(self, now: datetime | None = None) -> bool:
         """Skickar "Dagens 5 bästa fynd" en gång per dag, efter daily_summary_hour (svensk tid)."""

@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from unittest import mock
@@ -1772,6 +1773,26 @@ class GroupFeatureTests(unittest.TestCase):
         self.assertEqual(edit["reply_markup"]["inline_keyboard"], [[{"text": "Öppna på Vinted", "url": f"{BASE}/items/42"}]])
         self.assertEqual(self.store.due_sold_checks(10), [])   # kollas inte igen
         self.assertEqual(self.store.top_deals(0), [])
+
+    def test_sold_deal_is_teased_in_discord(self):
+        self.api = FakeBotApi()
+        self.store.db.execute("INSERT INTO deals VALUES (?,?,?,?,?,?,?,?,?,?)",
+                              (42, int(time.time()), "Moncler", "Moncler", "Moncler Maya dunjacka", 900, 1000, 2200, 1100,
+                               f"{BASE}/items/42"))
+        self.store.set_setting(f"join:link:{self.GROUP}", "https://t.me/+ansok")
+        self.sent_ago(12 * 60)
+        posts = []
+        with mock.patch.dict(os.environ, {"DISCORD_TEASER_WEBHOOK": "https://discord.test/hook"}), \
+                mock.patch.object(vb.DiscordNotifier, "send", lambda notifier, msg: posts.append((notifier.webhook, msg))):
+            self.assertEqual(self.sold_bot(FakeListingClient(sold_page())).check_sold(), 1)
+        ((hook, msg),) = posts
+        self.assertEqual((hook, msg.title, msg.url), ("https://discord.test/hook", "❌ SÅLD inom 15 min – Moncler",
+                                                       "https://t.me/+ansok"))
+        self.assertIn("Möjlig vinst: ≈ +1 100 kr", msg.lines)
+        self.assertIn("👉 Få fynden direkt: https://t.me/+ansok", msg.lines)
+        bot = self.sold_bot(FakeListingClient(sold_page()))
+        self.assertFalse(bot.teaser(42, time.time() - 2 * 86400, self.GROUP))      # sålt efter mer än ett dygn
+        self.assertFalse(bot.teaser(42, time.time(), self.GROUP))                  # ingen webhook satt
 
     def test_unsold_deal_is_checked_after_10_and_30_min_then_1_3_6_and_24_hours(self):
         self.api = FakeBotApi()
