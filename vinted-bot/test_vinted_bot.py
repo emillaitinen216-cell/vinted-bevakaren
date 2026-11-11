@@ -2992,27 +2992,34 @@ class DiscordSetupTests(unittest.TestCase):
         self.addCleanup(store.db.close)
         return store, db
 
-    def test_free_price_check_in_discord_with_daily_limit(self):
+    def discord_listener(self, channels, items=None):
         store, db = self.store()
         store.set_setting("join:link:-1001", "https://t.me/+ansok")
-        items = [item(id=i, brand="Moncler", title="Moncler Maya", price=1000 * i) for i in range(1, 7)]
-        api, calls = self.fake_discord([{"id": "55", "type": 0, "name": "prischeck"}])
-        inbox = []
-        real = api
+        api, calls = self.fake_discord(channels)
+        inbox: dict = {}
 
         def discord(token, method, path, payload=None, timeout=20):
+            if method == "GET" and path == "/guilds/9":
+                return {"system_channel_id": "33"}
             if method == "GET" and "/messages" in path:
                 calls.append((method, path, payload))
-                return inbox.pop(0) if inbox else []
-            return real(token, method, path, payload, timeout)
+                channel = path.split("/")[2]
+                return inbox.get(channel, []).pop(0) if inbox.get(channel) else []
+            return api(token, method, path, payload, timeout)
 
-        listener = vb.DiscordListener("tok", db, make_cfg(), [], api=discord, client=CatalogClient(items))
-        inbox.append([{"id": "100", "content": "gammalt", "author": {"id": "7"}}])
+        listener = vb.DiscordListener("tok", db, make_cfg(), legit_searches(make_cfg()), LEGIT_TIPS, api=discord,
+                                      client=CatalogClient(items or []))
+        return store, listener, inbox, calls
+
+    def test_free_price_check_in_discord_with_daily_limit(self):
+        items = [item(id=i, brand="Moncler", title="Moncler Maya", price=1000 * i) for i in range(1, 7)]
+        store, listener, inbox, calls = self.discord_listener([{"id": "55", "type": 0, "name": "prischeck"}], items)
+        inbox["55"] = [[{"id": "100", "content": "gammalt", "author": {"id": "7"}}]]
         listener.poll(store)                                                 # första gången: inget gammalt besvaras
-        self.assertEqual(store.get_setting("discord:price_last"), "100")
+        self.assertEqual(store.get_setting("discord:last:prischeck"), "100")
         for n in range(5):
-            listener.pricer.last_by_user.clear()
-            inbox.append([{"id": str(101 + n), "content": "Moncler Maya", "author": {"id": "7"}}])
+            listener.helper.last_by_user.clear()
+            inbox["55"].append([{"id": str(101 + n), "content": "Moncler Maya", "author": {"id": "7"}}])
             listener.poll(store)
         answers = [p for m, path, p in calls if m == "POST" and path == "/channels/55/messages"]
         self.assertEqual(len(answers), 4)                                    # 3 svar + en tillsägelse, sedan tyst
@@ -3021,6 +3028,54 @@ class DiscordSetupTests(unittest.TestCase):
         self.assertEqual(answers[0]["message_reference"]["message_id"], "101")
         self.assertIn("använt dina 3 gratis prischeckar", answers[3]["content"])
         self.assertIn("https://t.me/+ansok", answers[3]["content"])
+
+    def test_free_legit_check_and_welcome_in_discord(self):
+        store, listener, inbox, calls = self.discord_listener([{"id": "66", "type": 0, "name": "legit-check"}])
+        listener.helper.client = FakeListingClient(listing_page(price="900"))
+        listener.poll(store)                                                 # första gången
+        inbox["66"] = [[{"id": "200", "content": "är den här äkta? https://www.vinted.se/items/42424242-maya",
+                         "author": {"id": "7"}},
+                        {"id": "201", "content": "snygg jacka!", "author": {"id": "8"}}]]
+        inbox["33"] = [[{"id": "300", "type": 7, "content": "", "author": {"id": "9"}}]]
+        listener.poll(store)
+        posts = {path: p for m, path, p in calls if m == "POST"}
+        legit = posts["/channels/66/messages"]
+        self.assertIn("🔍 Legitcheck", legit["content"])
+        self.assertIn("2 gratis kvar idag", legit["content"])
+        self.assertEqual(legit["message_reference"]["message_id"], "200")    # bara länken fick svar
+        welcome = posts["/channels/33/messages"]
+        self.assertIn("Välkommen <@9>", welcome["content"])
+        self.assertIn("<#66>", welcome["content"])
+        self.assertEqual(welcome["allowed_mentions"], {"users": ["9"]})
+
+    def test_warns_once_when_message_content_is_missing(self):
+        store, listener, inbox, calls = self.discord_listener([{"id": "55", "type": 0, "name": "prischeck"}])
+        listener.poll(store)
+        inbox["55"] = [[{"id": "101", "content": "", "author": {"id": "7"}}, {"id": "102", "content": "", "author": {"id": "8"}}]]
+        with self.assertLogs("vinted-bot", "WARNING") as logs:
+            listener.poll(store)
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("Message Content Intent", logs.output[0])
+
+    def test_weekly_best_on_sundays(self):
+        store, _ = self.store()
+        sunday = datetime(2026, 11, 15, 21, tzinfo=vb.STOCKHOLM)
+        ts = int(sunday.timestamp()) - 86400
+        for i, profit in enumerate((300, 1100, 700, 500), 1):
+            store.db.execute("INSERT INTO deals VALUES (?,?,?,?,?,?,?,?,?,?)",
+                             (i, ts, "S", f"Märke{i}", f"Plagg {i}", 500, 550, 2000, profit, "u"))
+            store.record_sent("-1001", i, i, "photo", "x", "u")
+        store.db.execute("UPDATE sent SET status = 'SÅLD', sold_after = 600 WHERE item_id != 2")
+        api, calls = self.fake_discord([{"id": "2", "type": 0, "name": "sålda-fynd"}])
+        bot = vb.Bot(make_cfg(), [], FakeClient(), store, [])
+        with mock.patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "tok"}), mock.patch.object(vb, "discord_api", api), \
+                self.assertLogs("vinted-bot", "INFO"):
+            self.assertIn("veckans bästa", bot.discord_daily(sunday))
+        week = [p["embeds"][0] for m, path, p in calls if m == "POST" and "Veckans" in p["embeds"][0]["title"]][0]
+        text = week["description"]
+        self.assertTrue(text.startswith("🥇 **Märke3**"), text)              # största sålda (Märke2 såldes inte)
+        self.assertIn("🥉 **Märke1**", text)
+        self.assertIn("sålt inom 10 min", text)
 
     def test_daily_tip_and_summary(self):
         store, _ = self.store()

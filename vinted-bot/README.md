@@ -401,7 +401,9 @@ resellers: kategorierna INFO, FYND och COMMUNITY med kanalerna #välkommen, #reg
    *Reset Token* och kopiera token. Lägg den som hemligheten `DISCORD_BOT_TOKEN` i GitHub.
 3. Fliken *OAuth2* › *URL Generator*: kryssa i `bot` och sedan `Administrator`, öppna länken
    och välj servern.
-4. *Actions* › *Bygg Discord-servern* › *Run workflow*.
+4. Fliken *Bot* › *Privileged Gateway Intents*: slå på **Message Content Intent** och spara –
+   annars ser boten inte vad som skrivs i #prischeck och #legit-check.
+5. *Actions* › *Bygg Discord-servern* › *Run workflow*.
 
 Med `DISCORD_BOT_TOKEN` skickar boten också smakproven till #sålda-fynd själv – då behövs
 ingen webhook. Boten gör då dessutom det här i Discord:
@@ -409,6 +411,11 @@ ingen webhook. Boten gör då dessutom det här i Discord:
 - **💰 #prischeck:** skriv ett plagg och få vad det kostar på Vinted (samma som `/pris`).
   Gratis 3 gånger per person och dag, sedan en hänvisning till VIP med ansökningslänken.
   Kanalen läses var 5:e sekund medan boten kör.
+- **🔍 #legit-check:** klistra in en Vinted-länk och få legitcheckens riskbedömning. Också
+  3 gratis per person och dag. Annat som skrivs i kanalen lämnas åt medlemmarna.
+- **👋 Välkomsthälsning:** när någon går med svarar boten på Discords "gick med"-meddelande
+  med var man börjar.
+- **🏆 Veckans bästa fynd** i #sålda-fynd varje söndagskväll: veckans tre största fynd som hann säljas.
 - **💡 Dagens resell-tips** i #tips varje morgon (efter kl. 8), 30 olika tips som går runt.
 - **📊 Dagens fynd i VIP** i #sålda-fynd varje kväll (samma tid som Dagens bästa): antal
   fynd, total möjlig vinst, hur många som såldes och vilket som gick snabbast.

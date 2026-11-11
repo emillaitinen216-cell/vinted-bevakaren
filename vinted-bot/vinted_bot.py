@@ -3378,30 +3378,32 @@ class LegitListener:
             log.warning("Kunde inte nå Telegram (%s)", e)
 
     def check(self, item_id: int, chat: str, reply_to, user, thread: int | None = None) -> None:
+        msg = self.legit_message(item_id, user)
+        if msg:
+            self.reply(chat, reply_to, msg, thread)
+
+    def legit_message(self, item_id: int, user) -> Message | None:
+        """Legitcheckens svar för annonsen (None = samma person frågade nyss – svara inte alls)."""
         now = time.monotonic()
         if user is not None and now - self.last_by_user.get(user, -1e9) < 5:
-            return  # samma person tryckte flera gånger
+            return None  # samma person tryckte flera gånger
         self.recent = [t for t in self.recent if now - t < 600]
         url = f"https://www.{self.cfg['domain']}/items/{item_id}"
         if len(self.recent) >= 30:
-            self.reply(chat, reply_to, Message("🔍 Legitcheck", ["Många kontroller just nu – vänta några minuter."], url), thread)
-            return
+            return Message("🔍 Legitcheck", ["Många kontroller just nu – vänta några minuter."], url)
         self.last_by_user[user] = now
         self.recent.append(now)
         try:
             body = self.client.fetch_listing_page(item_id)
         except Blocked:
-            self.reply(chat, reply_to, Message("🔍 Legitcheck", ["Vinted svarar inte just nu – försök igen om en stund."], url), thread)
-            return
+            return Message("🔍 Legitcheck", ["Vinted svarar inte just nu – försök igen om en stund."], url)
         except FetchError as e:
-            self.reply(chat, reply_to, Message("🔍 Legitcheck", [f"Kunde inte hämta annonsen ({e})."], url), thread)
-            return
+            return Message("🔍 Legitcheck", [f"Kunde inte hämta annonsen ({e})."], url)
         listing = parse_listing(body, self.client.base, item_id) if body else None
         if listing is None:
-            self.reply(chat, reply_to, Message("🔍 Legitcheck", ["Hittade inte annonsen – den kan vara såld eller borttagen."], url), thread)
-            return
-        self.reply(chat, reply_to, legit_check(listing, self.searches, self.tips), thread)
+            return Message("🔍 Legitcheck", ["Hittade inte annonsen – den kan vara såld eller borttagen."], url)
         log.info("Legitcheck: svarade på en kontroll")
+        return legit_check(listing, self.searches, self.tips)
 
     def reply(self, chat: str, reply_to, msg: Message, thread: int | None = None) -> bool:
         text = f"<b>{escape(msg.title)}</b>\n" + "\n".join(escape(line) for line in msg.lines)
@@ -3432,17 +3434,21 @@ class LegitListener:
 
 
 class DiscordListener:
-    """Gratis prischeck i Discord-kanalen #prischeck: några frågor per person och dag, sedan hänvisning till VIP.
+    """Boten i Discord, medan den kör: gratis prischeck i #prischeck och legitcheck i #legit-check (några per
+    person och dag, sedan hänvisning till VIP), och en välkomsthälsning när någon går med i servern.
 
-    Discord skickar inte meddelanden till boten utan en ständig anslutning, så kanalen läses var 5:e sekund."""
+    Discord skickar inte meddelanden till boten utan en ständig anslutning, så kanalerna läses var 5:e sekund.
+    Kräver att "Message Content Intent" är påslagen för boten, annars är meddelandena tomma."""
 
     PER_DAY = 3
 
-    def __init__(self, token: str, db_path: Path, cfg: dict, searches: list[Search], api=None, client=None):
+    def __init__(self, token: str, db_path: Path, cfg: dict, searches: list[Search], tips: dict | None = None,
+                 api=None, client=None):
         self.token, self.db_path, self.cfg = token, db_path, cfg
         self.api = api or discord_api
-        self.pricer = LegitListener("", db_path, cfg, searches, {}, client=client)  # samma prischeck som /pris
-        self.channel: str | None = None
+        self.helper = LegitListener("", db_path, cfg, searches, tips or {}, client=client)  # samma som i Telegram
+        self.channels: dict[str, str | None] = {}
+        self.warned_empty = False
 
     def run(self, until: float | None = None) -> None:
         store = Store(self.db_path)  # egen anslutning, eftersom lyssnaren har en egen tråd
@@ -3452,59 +3458,116 @@ class DiscordListener:
                     if self.poll(store) is False:
                         return
                 except NotifyError as e:
-                    log.warning("Discord-prischeck: Discord svarade %s", e.status)
+                    log.warning("Discord: Discord svarade %s", e.status)
                     time.sleep(30)
                 except OSError:
                     time.sleep(15)
                 time.sleep(5)
         except Exception:
-            log.exception("Discord-prischeck: oväntat fel – slutar lyssna")
+            log.exception("Discord: oväntat fel – slutar lyssna")
         finally:
             store.db.close()
 
+    def channel(self, store: "Store", role: str) -> str | None:
+        """Kanal-id för "prischeck", "legit-check" eller "welcome" (serverns kanal för systemmeddelanden)."""
+        if role not in self.channels:
+            key = "discord:channel:" + role
+            found = store.get_setting(key)
+            if not found and role == "welcome":
+                guilds = self.api(self.token, "GET", "/users/@me/guilds") or []
+                guild = os.environ.get("DISCORD_GUILD_ID") or (str(guilds[0]["id"]) if len(guilds) == 1 else None)
+                info = self.api(self.token, "GET", f"/guilds/{guild}") if guild else None
+                found = str((info or {}).get("system_channel_id") or "") or None
+            elif not found:
+                name = str(self.cfg.get(f"discord_{role.replace('-', '_')}_channel") or role)
+                found = discord_channel(self.token, name, os.environ.get("DISCORD_GUILD_ID"), api=self.api)
+            if found:
+                store.set_setting(key, found)
+            self.channels[role] = found
+        return self.channels[role]
+
     def poll(self, store: "Store") -> bool:
-        """Svarar på nya meddelanden. False = det finns ingen #prischeck-kanal."""
-        if not self.channel:
-            name = str(self.cfg.get("discord_price_channel") or "prischeck")
-            self.channel = store.get_setting("discord:channel:" + name) or discord_channel(
-                self.token, name, os.environ.get("DISCORD_GUILD_ID"), api=self.api)
-            if not self.channel:
-                log.info("Discord-prischeck: ingen kanal #%s – kör Bygg Discord-servern för att skapa den.", name)
-                return False
-            store.set_setting("discord:channel:" + name, self.channel)
-        last = store.get_setting("discord:price_last")
-        if not last:  # första gången: svara bara på det som skrivs från och med nu
-            newest = self.api(self.token, "GET", f"/channels/{self.channel}/messages?limit=1") or []
-            store.set_setting("discord:price_last", str(newest[0]["id"]) if newest else "0")
-            return True
-        messages = self.api(self.token, "GET", f"/channels/{self.channel}/messages?after={last}&limit=20") or []
-        for message in sorted(messages, key=lambda m: int(m["id"])):
-            store.set_setting("discord:price_last", str(message["id"]))  # direkt, så att inget besvaras två gånger
-            if not (message.get("author") or {}).get("bot") and str(message.get("content") or "").strip():
-                self.answer(message, store)
+        """Svarar på nya meddelanden. False = boten har inga kanaler att lyssna på."""
+        active = [r for r in ("prischeck", "legit-check", "welcome") if self.channel(store, r)]
+        if not active:
+            log.info("Discord: hittar varken #prischeck eller #legit-check – kör Bygg Discord-servern.")
+            return False
+        for role in active:
+            channel = self.channels[role]
+            key = f"discord:last:{role}"
+            last = store.get_setting(key)
+            if not last:  # första gången: svara bara på det som skrivs från och med nu
+                newest = self.api(self.token, "GET", f"/channels/{channel}/messages?limit=1") or []
+                store.set_setting(key, str(newest[0]["id"]) if newest else "0")
+                continue
+            messages = self.api(self.token, "GET", f"/channels/{channel}/messages?after={last}&limit=20") or []
+            for message in sorted(messages, key=lambda m: int(m["id"])):
+                store.set_setting(key, str(message["id"]))  # direkt, så att inget besvaras två gånger
+                if (message.get("author") or {}).get("bot"):
+                    continue
+                if role == "welcome":
+                    if message.get("type") == 7:  # "X gick med i servern"
+                        self.welcome(message, channel)
+                    continue
+                text = str(message.get("content") or "").strip()
+                if not text:
+                    if not (message.get("attachments") or message.get("embeds")) and not self.warned_empty:
+                        self.warned_empty = True
+                        log.warning("Discord: meddelandena är tomma – slå på Message Content Intent för boten "
+                                    "(Developer Portal › Bot › Privileged Gateway Intents).")
+                    continue
+                self.answer(role, message, text, channel, store)
         return True
 
-    def answer(self, message: dict, store: "Store") -> None:
+    def welcome(self, message: dict, channel: str) -> None:
         user = str((message.get("author") or {}).get("id"))
+        mentions = {name: self.channels.get(name) for name in ("prischeck", "legit-check")}
+        lines = [f"👋 Välkommen <@{user}>!",
+                 "Läs reglerna och säg hej i #snack."]
+        if mentions["prischeck"]:
+            lines.append(f"💰 Prova gratis prischeck i <#{mentions['prischeck']}> – skriv bara ett plagg.")
+        if mentions["legit-check"]:
+            lines.append(f"🔍 Osäker på om något är äkta? Klistra in Vinted-länken i <#{mentions['legit-check']}>.")
+        self.api(self.token, "POST", f"/channels/{channel}/messages", {
+            "content": "\n".join(lines), "allowed_mentions": {"users": [user]},
+            "message_reference": {"message_id": str(message["id"]), "fail_if_not_exists": False}})
+        log.info("Discord: hälsade en ny medlem välkommen")
+
+    def answer(self, role: str, message: dict, text: str, channel: str, store: "Store") -> None:
+        user = str((message.get("author") or {}).get("id"))
+        item_id = item_id_in(text) if role == "legit-check" else None
+        if role == "legit-check" and not item_id:
+            return  # vanligt snack eller bilder – det svarar medlemmarna på
         today = datetime.now(STOCKHOLM).date().isoformat()
-        key = f"discord:pris:{today}:{user}"
+        key = f"discord:{'legit' if item_id else 'pris'}:{today}:{user}"
         used = int(store.get_setting(key) or 0)
+        what = "legitcheckar" if item_id else "prischeckar"
         link = next((v for _, v in store.settings_starting_with("join:link:")), "")
         vip = f"Obegränsat – och fynden direkt i mobilen – i VIP: <{link}>" if link else "Obegränsat i VIP."
         if used >= self.PER_DAY:
             if used > self.PER_DAY:
                 return  # redan tillsagd idag
-            lines, url = [f"Du har använt dina {self.PER_DAY} gratis prischeckar idag – nya i morgon.", vip], ""
+            title, lines = ("🔍 Legitcheck" if item_id else "💰 Prischeck"), [
+                f"Du har använt dina {self.PER_DAY} gratis {what} idag – nya i morgon.", vip]
             store.set_setting(key, str(used + 1))
+        elif item_id:
+            msg = self.helper.legit_message(item_id, user)
+            if not msg:
+                return
+            title, lines = msg.title, msg.lines + [f"🔗 <{msg.url}>"]
+            used += 1
+            store.set_setting(key, str(used))
+            lines.append(f"_{self.PER_DAY - used} gratis kvar idag. {vip}_")
         else:
-            lines, url = self.pricer.price_lines(str(message["content"]), user,
+            title = "💰 Prischeck"
+            lines, url = self.helper.price_lines(text, user,
                                                  "Skriv märke och modell, t.ex. Moncler Maya eller Stone Island tröja.")
             if url:
                 used += 1
                 store.set_setting(key, str(used))
                 lines = lines + [f"🔗 <{url}>", f"_{self.PER_DAY - used} gratis kvar idag. {vip}_"]
-        self.api(self.token, "POST", f"/channels/{self.channel}/messages", {
-            "content": ("**💰 Prischeck**\n" + "\n".join(lines))[:2000],
+        self.api(self.token, "POST", f"/channels/{channel}/messages", {
+            "content": (f"**{title}**\n" + "\n".join(lines))[:2000],
             "message_reference": {"message_id": str(message["id"]), "fail_if_not_exists": False},
             "allowed_mentions": {"parse": []}})
 
@@ -3984,6 +4047,27 @@ class Bot:
             raise
         return True
 
+    def discord_week(self, now: datetime) -> bool:
+        """Söndagar: veckans tre största fynd som hann säljas, i #sålda-fynd."""
+        since = int(now.timestamp()) - 7 * 86400
+        rows = self.store.db.execute(
+            "SELECT d.brand, d.title, d.price, d.resale, d.profit, MIN(s.sold_after) FROM deals d "
+            "JOIN sent s ON s.item_id = d.item_id WHERE d.ts >= ? AND s.status = 'SÅLD' "
+            "GROUP BY d.item_id ORDER BY d.profit DESC LIMIT 3", (since,)).fetchall()
+        if not rows:
+            return False
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for medal, (brand, title, price, resale, profit, sold_after) in zip(medals, rows):
+            lines.append(f"{medal} **{brand or 'Fynd'}** – {str(title or '')[:60]}")
+            lines.append(f"Köpt {money(price)} kr · värd ca {money(resale)} kr · ≈ +{money(profit)} kr"
+                         + (f" · sålt {within(sold_after)}" if sold_after else ""))
+        link = next((v for _, v in self.store.settings_starting_with("join:link:")), "")
+        if link:
+            lines += ["", f"👉 Nästa vecka kan det vara du: {link}"]
+        return self.discord_post(str(self.cfg.get("discord_teaser_channel") or "sålda-fynd"),
+                                 Message("🏆 Veckans bästa fynd i VIP", lines, link or f"https://www.{self.cfg['domain']}/"))
+
     def discord_daily(self, now: datetime | None = None) -> list[str]:
         """Dagens resell-tips i #tips (på morgonen) och dagens siffror i #sålda-fynd (på kvällen)."""
         if self.dry_run or not self.store or not os.environ.get("DISCORD_BOT_TOKEN", "").strip():
@@ -4021,8 +4105,12 @@ class Bot:
                                      Message("📊 Dagens fynd i VIP", lines, link or f"https://www.{self.cfg['domain']}/")):
                     done.append("sammanfattning")
             # gratis-prischeckar från tidigare dagar behövs inte längre
-            self.store.db.execute("DELETE FROM settings WHERE key LIKE 'discord:pris:%' AND key NOT LIKE ?",
-                                  (f"discord:pris:{today}:%",))
+            if now.weekday() == 6 and get("discord:week:last") != today and self.discord_week(now):
+                put("discord:week:last", today)
+                done.append("veckans bästa")
+            for kind in ("pris", "legit"):
+                self.store.db.execute("DELETE FROM settings WHERE key LIKE ? AND key NOT LIKE ?",
+                                      (f"discord:{kind}:%", f"discord:{kind}:{today}:%"))
             self.store.db.commit()
         if done:
             log.info("Discord: skickade %s.", " och ".join(done))
@@ -4606,7 +4694,8 @@ def main(argv: list[str] | None = None) -> int:
         listener.start()
         log.info("Legitcheck: svarar på /legit i Telegram%s.", f" i {args.listen:g} s" if until else "")
         if discord_token := os.environ.get("DISCORD_BOT_TOKEN", "").strip():  # gratis prischeck i Discord
-            threading.Thread(target=DiscordListener(discord_token, db_path, cfg, searches).run, args=(until,),
+            threading.Thread(target=DiscordListener(discord_token, db_path, cfg, searches,
+                                                    load_legit_tips(HERE / "legit_tips.yaml")).run, args=(until,),
                              name="discord", daemon=True).start()
     try:
         if args.once:

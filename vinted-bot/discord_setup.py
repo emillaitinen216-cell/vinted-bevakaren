@@ -93,8 +93,11 @@ def layout(link: str) -> list[tuple[str, list[tuple[str, str, bool, str]]]]:
             ("legit-check", "Osäker på om något är äkta? Lägg upp bilder här", False, "\n".join([
                 "🔍 **Legit check**",
                 "",
-                "Lägg upp länken eller bilder på plagget: etiketter, tvättlapp, sömmar, dragkedja och logga. "
-                "Fler bilder ger säkrare svar.",
+                "Klistra in en Vinted-länk så svarar boten med en riskbedömning: säljarens omdömen, bilderna, "
+                "varningsord och vad du ska be säljaren fota (3 gratis per dag, obegränsat i <#vip-telegram>).",
+                "",
+                "Har du köpt något? Lägg upp bilder på etiketter, tvättlapp, sömmar, dragkedja och logga, så hjälper "
+                "andra till.",
             ])),
             ("mina-vinster", "Visa vad du tjänat", False, "\n".join([
                 "🏆 **Mina vinster**",
