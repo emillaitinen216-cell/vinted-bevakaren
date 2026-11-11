@@ -404,7 +404,14 @@ resellers: kategorierna INFO, FYND och COMMUNITY med kanalerna #välkommen, #reg
 4. *Actions* › *Bygg Discord-servern* › *Run workflow*.
 
 Med `DISCORD_BOT_TOKEN` skickar boten också smakproven till #sålda-fynd själv – då behövs
-ingen webhook.
+ingen webhook. Boten gör då dessutom det här i Discord:
+
+- **💰 #prischeck:** skriv ett plagg och få vad det kostar på Vinted (samma som `/pris`).
+  Gratis 3 gånger per person och dag, sedan en hänvisning till VIP med ansökningslänken.
+  Kanalen läses var 5:e sekund medan boten kör.
+- **💡 Dagens resell-tips** i #tips varje morgon (efter kl. 8), 30 olika tips som går runt.
+- **📊 Dagens fynd i VIP** i #sålda-fynd varje kväll (samma tid som Dagens bästa): antal
+  fynd, total möjlig vinst, hur många som såldes och vilket som gick snabbast.
 
 ### ntfy (enklast, inget konto)
 

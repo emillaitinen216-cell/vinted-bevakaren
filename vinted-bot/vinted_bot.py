@@ -785,11 +785,12 @@ def discord_api(token: str, method: str, path: str, payload: dict | None = None,
     return None
 
 
-def discord_channel(token: str, name: str, guild_id: str | None = None) -> str | None:
+def discord_channel(token: str, name: str, guild_id: str | None = None, api=None) -> str | None:
     """Id för textkanalen med det namnet på bottens server (den enda, eller guild_id)."""
-    guilds = [str(g["id"]) for g in discord_api(token, "GET", "/users/@me/guilds") or []]
+    api = api or discord_api
+    guilds = [str(g["id"]) for g in api(token, "GET", "/users/@me/guilds") or []]
     for guild in ([guild_id] if guild_id else guilds):
-        for channel in discord_api(token, "GET", f"/guilds/{guild}/channels") or []:
+        for channel in api(token, "GET", f"/guilds/{guild}/channels") or []:
             if channel.get("type") == 0 and channel.get("name") == name:
                 return str(channel["id"])
     return None
@@ -3124,16 +3125,19 @@ class LegitListener:
 
     def price_check(self, query: str, chat: str, reply_to, user, thread: int | None) -> None:
         """/pris Moncler Maya – vad liknande plagg kostar på Vinted just nu."""
+        lines, search_url = self.price_lines(query, user, "Skriv /pris och vad du letar efter, t.ex. /pris Moncler "
+                                                         "Maya eller /pris Stone Island tröja.")
+        buttons = [[{"text": "Se annonserna på Vinted", "url": search_url}]] if search_url else []
+        self.reply(chat, reply_to, Message("💰 Pris", lines, search_url, buttons=buttons), thread)
+
+    def price_lines(self, query: str, user, usage: str) -> tuple[list[str], str]:
+        """(svarsrader, länk till sökningen på Vinted – "" om ingen sökning gjordes)."""
         query = query.strip()[:60]
         search_url = f"https://www.{self.cfg['domain']}/catalog?search_text={urllib.parse.quote(query)}"
         if not words(query):
-            self.reply(chat, reply_to, Message("💰 Pris", [
-                "Skriv /pris och vad du letar efter, t.ex. /pris Moncler Maya eller /pris Stone Island tröja."],
-                "", buttons=[]), thread)
-            return
+            return [usage], ""
         if not self._budget(user):
-            self.reply(chat, reply_to, Message("💰 Pris", ["Många frågor just nu – vänta en minut."], "", buttons=[]), thread)
-            return
+            return ["Många frågor just nu – vänta en minut."], ""
         catalogs = sorted({c for s in self.searches for c in s.catalog_ids})
         search = build_search({"name": "pris", "query": query, "catalog": catalogs, "resale": 1,
                                "max_price": 1_000_000, "min_profit": 0}, self.cfg)
@@ -3150,21 +3154,16 @@ class LegitListener:
                 if len(items) < 50:
                     break
         except FetchError:
-            self.reply(chat, reply_to, Message("💰 Pris", ["Vinted svarar inte just nu – försök igen om en stund."],
-                                               search_url), thread)
-            return
-        if len(prices) < 5:
-            lines = [f"Hittade för få annonser för \"{query}\" ({len(prices)} st) för att säga något säkert.",
-                     "Prova med färre ord, t.ex. bara märket och modellen."]
-        else:
-            q1, med, q3 = statistics.quantiles(prices, n=4)
-            lines = [f"\"{query}\" just nu på Vinted: {len(prices)} annonser",
-                     f"Median {money(med)} kr – hälften ligger mellan {money(q1)} och {money(q3)} kr.",
-                     f"Vill du sälja snabbt: sätt runt {money(round(med * 0.9, -1))} kr.",
-                     "Det här är annonspriser – det som faktiskt säljs går ofta 10–20 % lägre."]
-        self.reply(chat, reply_to, Message("💰 Pris", lines, search_url,
-                                           buttons=[[{"text": "Se annonserna på Vinted", "url": search_url}]]), thread)
+            return ["Vinted svarar inte just nu – försök igen om en stund."], search_url
         log.info("Pris: svarade på en fråga")
+        if len(prices) < 5:
+            return [f"Hittade för få annonser för \"{query}\" ({len(prices)} st) för att säga något säkert.",
+                    "Prova med färre ord, t.ex. bara märket och modellen."], search_url
+        q1, med, q3 = statistics.quantiles(prices, n=4)
+        return [f"\"{query}\" just nu på Vinted: {len(prices)} annonser",
+                f"Median {money(med)} kr – hälften ligger mellan {money(q1)} och {money(q3)} kr.",
+                f"Vill du sälja snabbt: sätt runt {money(round(med * 0.9, -1))} kr.",
+                "Det här är annonspriser – det som faktiskt säljs går ofta 10–20 % lägre."], search_url
 
     def sell_text(self, item_id: int, query: dict, chat: str, store: "Store", private: bool) -> None:
         """Knappen "📝 Säljtext": en färdig annonstext för att sälja plagget vidare, privat till den som trycker."""
@@ -3430,6 +3429,118 @@ class LegitListener:
             self.api(self.token, "answerCallbackQuery", {"callback_query_id": query.get("id"), "text": text}, timeout=10)
         except TelegramError:
             pass  # för gammal knapptryckning – svaret kommer ändå som meddelande
+
+
+class DiscordListener:
+    """Gratis prischeck i Discord-kanalen #prischeck: några frågor per person och dag, sedan hänvisning till VIP.
+
+    Discord skickar inte meddelanden till boten utan en ständig anslutning, så kanalen läses var 5:e sekund."""
+
+    PER_DAY = 3
+
+    def __init__(self, token: str, db_path: Path, cfg: dict, searches: list[Search], api=None, client=None):
+        self.token, self.db_path, self.cfg = token, db_path, cfg
+        self.api = api or discord_api
+        self.pricer = LegitListener("", db_path, cfg, searches, {}, client=client)  # samma prischeck som /pris
+        self.channel: str | None = None
+
+    def run(self, until: float | None = None) -> None:
+        store = Store(self.db_path)  # egen anslutning, eftersom lyssnaren har en egen tråd
+        try:
+            while until is None or time.monotonic() < until - 10:
+                try:
+                    if self.poll(store) is False:
+                        return
+                except NotifyError as e:
+                    log.warning("Discord-prischeck: Discord svarade %s", e.status)
+                    time.sleep(30)
+                except OSError:
+                    time.sleep(15)
+                time.sleep(5)
+        except Exception:
+            log.exception("Discord-prischeck: oväntat fel – slutar lyssna")
+        finally:
+            store.db.close()
+
+    def poll(self, store: "Store") -> bool:
+        """Svarar på nya meddelanden. False = det finns ingen #prischeck-kanal."""
+        if not self.channel:
+            name = str(self.cfg.get("discord_price_channel") or "prischeck")
+            self.channel = store.get_setting("discord:channel:" + name) or discord_channel(
+                self.token, name, os.environ.get("DISCORD_GUILD_ID"), api=self.api)
+            if not self.channel:
+                log.info("Discord-prischeck: ingen kanal #%s – kör Bygg Discord-servern för att skapa den.", name)
+                return False
+            store.set_setting("discord:channel:" + name, self.channel)
+        last = store.get_setting("discord:price_last")
+        if not last:  # första gången: svara bara på det som skrivs från och med nu
+            newest = self.api(self.token, "GET", f"/channels/{self.channel}/messages?limit=1") or []
+            store.set_setting("discord:price_last", str(newest[0]["id"]) if newest else "0")
+            return True
+        messages = self.api(self.token, "GET", f"/channels/{self.channel}/messages?after={last}&limit=20") or []
+        for message in sorted(messages, key=lambda m: int(m["id"])):
+            store.set_setting("discord:price_last", str(message["id"]))  # direkt, så att inget besvaras två gånger
+            if not (message.get("author") or {}).get("bot") and str(message.get("content") or "").strip():
+                self.answer(message, store)
+        return True
+
+    def answer(self, message: dict, store: "Store") -> None:
+        user = str((message.get("author") or {}).get("id"))
+        today = datetime.now(STOCKHOLM).date().isoformat()
+        key = f"discord:pris:{today}:{user}"
+        used = int(store.get_setting(key) or 0)
+        link = next((v for _, v in store.settings_starting_with("join:link:")), "")
+        vip = f"Obegränsat – och fynden direkt i mobilen – i VIP: <{link}>" if link else "Obegränsat i VIP."
+        if used >= self.PER_DAY:
+            if used > self.PER_DAY:
+                return  # redan tillsagd idag
+            lines, url = [f"Du har använt dina {self.PER_DAY} gratis prischeckar idag – nya i morgon.", vip], ""
+            store.set_setting(key, str(used + 1))
+        else:
+            lines, url = self.pricer.price_lines(str(message["content"]), user,
+                                                 "Skriv märke och modell, t.ex. Moncler Maya eller Stone Island tröja.")
+            if url:
+                used += 1
+                store.set_setting(key, str(used))
+                lines = lines + [f"🔗 <{url}>", f"_{self.PER_DAY - used} gratis kvar idag. {vip}_"]
+        self.api(self.token, "POST", f"/channels/{self.channel}/messages", {
+            "content": ("**💰 Prischeck**\n" + "\n".join(lines))[:2000],
+            "message_reference": {"message_id": str(message["id"]), "fail_if_not_exists": False},
+            "allowed_mentions": {"parse": []}})
+
+
+RESELL_TIPS = [
+    "Fota plaggen i dagsljus mot en ljus vägg – bilder säljer mer än text.",
+    "Ta alltid bild på etiketten och tvättlappen. Köpare letar efter dem för att se att plagget är äkta.",
+    "Titeln ska innehålla märke, modell, plagg och storlek, t.ex. \"Stone Island tröja herr L\".",
+    "Skriv mått: axlar, bröst och längd. Färre frågor och färre returer.",
+    "Söndag kväll är det flest köpare på Vinted – lägg upp då.",
+    "Har det inte sålts på en vecka: sänk priset 5–10 %. De som sparat annonsen får ett meddelande.",
+    "Lägg ett bud 10–15 % under på äldre annonser – många säljare tackar ja.",
+    "Storlek M och L säljs snabbast. Var försiktig med att köpa XS och XXL för att sälja vidare.",
+    "Dunjackor säljs dyrast oktober–januari. Köp dem på våren och sommaren när ingen vill ha dem.",
+    "Betala aldrig utanför Vinted – då försvinner köparskyddet.",
+    "Kolla säljarens omdömen innan du köper dyra märken. Få omdömen + lågt pris = var extra försiktig.",
+    "Be säljaren om fler bilder om något saknas: etiketter, dragkedja, knappar och sömmar.",
+    "Tryck \"Jag har ett problem\" inom 2 dagar efter leveransen om något inte stämmer.",
+    "Skicka paketet inom ett dygn – snabba säljare får bättre omdömen och säljer mer.",
+    "Ånga eller stryk plaggen innan du fotar dem – skrynkliga plagg ser billigare ut.",
+    "Paketköp: köp flera plagg från samma säljare och be om ett paketpris – du sparar frakten.",
+    "Skriv ärligt om fel och fläckar. Det ger bättre omdömen och färre returer.",
+    "Använd sökord köparna skriver, t.ex. \"vintage\", \"y2k\", \"oversized\" eller modellnamnet.",
+    "Spara sökningar på Vinted för dina favoritmärken – då får du en notis vid nya annonser.",
+    "Kolla vad samma plagg faktiskt sålts för innan du sätter pris, inte bara vad andra begär.",
+    "Rena, nytvättade plagg luktar inte – det märks i omdömena.",
+    "Byt ut slitna snören och knappar på billiga fynd – det kan höja värdet mycket.",
+    "Jeans: skriv midja och innerbenslängd (t.ex. W32 L32) – det är det köparna söker på.",
+    "Lägg upp flera plagg samtidigt – köpare som gillar en sak tittar på resten av din garderob.",
+    "Räkna med frakt och köparskydd när du räknar vinst – små marginaler äts lätt upp.",
+    "Märken med starka logotyper (Stone Island, Moncler, Ralph Lauren) kopieras ofta – kolla extra noga.",
+    "Sälj säsongens plagg först: jackor på hösten, shorts och linne på våren.",
+    "Svara snabbt på frågor – den som svarar först säljer oftast.",
+    "Håll koll på vad du köpt och sålt för – då vet du vilka märken som faktiskt ger vinst.",
+    "Var inte rädd att tacka nej till låga bud – rätt köpare kommer om priset är rimligt.",
+]
 
 
 # --------------------------------------------------------------------------
@@ -3855,6 +3966,68 @@ class Bot:
 
     TEASERS_PER_DAY = 12
 
+    def discord_post(self, name: str, msg: "Message") -> bool:
+        """Skickar till Discord-kanalen med det namnet via boten (DISCORD_BOT_TOKEN). False = ingen kanal/token."""
+        token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+        if not token or not self.store:
+            return False
+        key = "discord:channel:" + name
+        channel = self.store.get_setting(key) or discord_channel(token, name, os.environ.get("DISCORD_GUILD_ID"))
+        if not channel:
+            return False
+        self.store.set_setting(key, channel)
+        try:
+            discord_api(token, "POST", f"/channels/{channel}/messages", {"embeds": [discord_embed(msg)]})
+        except NotifyError as e:
+            if e.status == 404:
+                self.store.set_setting(key, "")  # kanalen borttagen – leta igen nästa gång
+            raise
+        return True
+
+    def discord_daily(self, now: datetime | None = None) -> list[str]:
+        """Dagens resell-tips i #tips (på morgonen) och dagens siffror i #sålda-fynd (på kvällen)."""
+        if self.dry_run or not self.store or not os.environ.get("DISCORD_BOT_TOKEN", "").strip():
+            return []
+        now = now or datetime.now(STOCKHOLM)
+        today, get, put = now.date().isoformat(), self.store.get_setting, self.store.set_setting
+        done = []
+        if now.hour >= 8 and get("discord:tip:last") != today:
+            put("discord:tip:last", today)
+            tip = RESELL_TIPS[now.toordinal() % len(RESELL_TIPS)]
+            if self.discord_post("tips", Message("💡 Dagens resell-tips", [tip], "")):
+                done.append("tips")
+        hour = self.cfg.get("daily_summary_hour")
+        hour = 20 if hour is None or hour is False else int(hour)
+        if now.hour >= hour and get("discord:summary:last") != today:
+            put("discord:summary:last", today)
+            since = int(now.timestamp()) - 86400
+            count, total = self.store.db.execute(
+                "SELECT COUNT(DISTINCT item_id), COALESCE(SUM(profit), 0) FROM deals WHERE ts >= ?", (since,)).fetchone()
+            if count:
+                sold = self.store.db.execute("SELECT COUNT(DISTINCT item_id) FROM sent WHERE ts >= ? AND status = 'SÅLD'",
+                                             (since,)).fetchone()[0]
+                fastest = self.store.db.execute(
+                    "SELECT d.brand, s.sold_after FROM sent s JOIN deals d ON d.item_id = s.item_id "
+                    "WHERE s.ts >= ? AND s.sold_after IS NOT NULL ORDER BY s.sold_after LIMIT 1", (since,)).fetchone()
+                link = next((v for _, v in self.store.settings_starting_with("join:link:")), "")
+                lines = [f"VIP-boten hittade **{count} fynd** idag med möjlig vinst på totalt **{money(total)} kr**."]
+                if sold:
+                    lines.append(f"{sold} av dem var sålda redan samma dag.")
+                if fastest and fastest[0]:
+                    lines.append(f"Snabbast: {fastest[0]} – sålt {within(fastest[1])}.")
+                if link:
+                    lines += ["", f"👉 Få fynden direkt i mobilen: {link}"]
+                if self.discord_post(str(self.cfg.get("discord_teaser_channel") or "sålda-fynd"),
+                                     Message("📊 Dagens fynd i VIP", lines, link or f"https://www.{self.cfg['domain']}/")):
+                    done.append("sammanfattning")
+            # gratis-prischeckar från tidigare dagar behövs inte längre
+            self.store.db.execute("DELETE FROM settings WHERE key LIKE 'discord:pris:%' AND key NOT LIKE ?",
+                                  (f"discord:pris:{today}:%",))
+            self.store.db.commit()
+        if done:
+            log.info("Discord: skickade %s.", " och ".join(done))
+        return done
+
     def teaser(self, item_id: int, sent_at: float, group: str, now: float | None = None) -> bool:
         """Smakprov i en gratis Discord-kanal: ett fynd som redan är sålt, med länk för att gå med.
         Kräver DISCORD_TEASER_WEBHOOK. Bara sålda fynd, så att ingen får fynden gratis."""
@@ -4208,7 +4381,8 @@ class Bot:
         """Dagens bästa och (på söndagar) veckorapporten – fel här får aldrig stoppa boten."""
         for report, what in ((self.daily_summary, "dagens bästa fynd"), (self.weekly_report, "veckorapporten"),
                              (self.monthly_leaderboard, "månadens topplista"), (self.auto_tune, "självjusteringen"),
-                             (self.owner_alarms, "larmen till ägaren")):
+                             (self.owner_alarms, "larmen till ägaren"),
+                             (self.discord_daily, "Discord-tipset och -sammanfattningen")):
             try:
                 report()
             except Exception:
@@ -4431,6 +4605,9 @@ def main(argv: list[str] | None = None) -> int:
             args=(until,), name="legitcheck", daemon=True)
         listener.start()
         log.info("Legitcheck: svarar på /legit i Telegram%s.", f" i {args.listen:g} s" if until else "")
+        if discord_token := os.environ.get("DISCORD_BOT_TOKEN", "").strip():  # gratis prischeck i Discord
+            threading.Thread(target=DiscordListener(discord_token, db_path, cfg, searches).run, args=(until,),
+                             name="discord", daemon=True).start()
     try:
         if args.once:
             try:

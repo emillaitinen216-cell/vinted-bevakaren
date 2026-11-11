@@ -82,6 +82,14 @@ def layout(link: str) -> list[tuple[str, list[tuple[str, str, bool, str]]]]:
         ]),
         ("💬 COMMUNITY", [
             ("snack", "Prata om allt som har med resell att göra", False, ""),
+            ("prischeck", "Skriv ett plagg – boten svarar vad det kostar på Vinted", False, "\n".join([
+                "💰 **Gratis prischeck**",
+                "",
+                "Skriv märke och modell här, t.ex. *Moncler Maya* eller *Stone Island tröja*, så svarar boten vad "
+                "det kostar på Vinted just nu: median, vanligt prisintervall och vad du bör sätta för att sälja snabbt.",
+                "",
+                "Du har 3 gratis prischeckar per dag. Obegränsat i <#vip-telegram>.",
+            ])),
             ("legit-check", "Osäker på om något är äkta? Lägg upp bilder här", False, "\n".join([
                 "🔍 **Legit check**",
                 "",

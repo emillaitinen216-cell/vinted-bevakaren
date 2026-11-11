@@ -2969,7 +2969,7 @@ class DiscordSetupTests(unittest.TestCase):
         import discord_setup
         api, calls = self.fake_discord()
         created = discord_setup.build("tok", None, "https://t.me/+ansok", api=api, pause=0)
-        self.assertEqual(created, ["välkommen", "regler", "vip-telegram", "sålda-fynd", "snack", "legit-check",
+        self.assertEqual(created, ["välkommen", "regler", "vip-telegram", "sålda-fynd", "snack", "prischeck", "legit-check",
                                    "mina-vinster", "köp-sälj-byt", "tips"])
         made = {p["name"]: p for m, path, p in calls if m == "POST" and path.endswith("/channels")}
         self.assertEqual(made["regler"]["permission_overwrites"],
@@ -2983,6 +2983,65 @@ class DiscordSetupTests(unittest.TestCase):
         calls.clear()
         self.assertEqual(discord_setup.build("tok", None, "", api=api, pause=0), [])    # andra gången: inget nytt
         self.assertEqual([c for c in calls if c[0] != "GET"], [])
+
+    def store(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db = Path(tmp.name) / "bot.db"
+        store = vb.Store(db)
+        self.addCleanup(store.db.close)
+        return store, db
+
+    def test_free_price_check_in_discord_with_daily_limit(self):
+        store, db = self.store()
+        store.set_setting("join:link:-1001", "https://t.me/+ansok")
+        items = [item(id=i, brand="Moncler", title="Moncler Maya", price=1000 * i) for i in range(1, 7)]
+        api, calls = self.fake_discord([{"id": "55", "type": 0, "name": "prischeck"}])
+        inbox = []
+        real = api
+
+        def discord(token, method, path, payload=None, timeout=20):
+            if method == "GET" and "/messages" in path:
+                calls.append((method, path, payload))
+                return inbox.pop(0) if inbox else []
+            return real(token, method, path, payload, timeout)
+
+        listener = vb.DiscordListener("tok", db, make_cfg(), [], api=discord, client=CatalogClient(items))
+        inbox.append([{"id": "100", "content": "gammalt", "author": {"id": "7"}}])
+        listener.poll(store)                                                 # första gången: inget gammalt besvaras
+        self.assertEqual(store.get_setting("discord:price_last"), "100")
+        for n in range(5):
+            listener.pricer.last_by_user.clear()
+            inbox.append([{"id": str(101 + n), "content": "Moncler Maya", "author": {"id": "7"}}])
+            listener.poll(store)
+        answers = [p for m, path, p in calls if m == "POST" and path == "/channels/55/messages"]
+        self.assertEqual(len(answers), 4)                                    # 3 svar + en tillsägelse, sedan tyst
+        self.assertIn("Median", answers[0]["content"])
+        self.assertIn("2 gratis kvar idag", answers[0]["content"])
+        self.assertEqual(answers[0]["message_reference"]["message_id"], "101")
+        self.assertIn("använt dina 3 gratis prischeckar", answers[3]["content"])
+        self.assertIn("https://t.me/+ansok", answers[3]["content"])
+
+    def test_daily_tip_and_summary(self):
+        store, _ = self.store()
+        now = datetime(2026, 11, 11, 21, tzinfo=vb.STOCKHOLM)
+        ts = int(now.timestamp()) - 3600
+        for i, (brand, profit) in enumerate((("Moncler", 1100), ("Diesel", 300)), 1):
+            store.db.execute("INSERT INTO deals VALUES (?,?,?,?,?,?,?,?,?,?)",
+                             (i, ts, "S", brand, brand, 500, 550, 2000, profit, "u"))
+        store.record_sent("-1001", 1, 1, "photo", "x", "u")
+        store.db.execute("UPDATE sent SET ts = ?, status = 'SÅLD', sold_after = 240", (ts,))
+        api, calls = self.fake_discord([{"id": "1", "type": 0, "name": "tips"}, {"id": "2", "type": 0, "name": "sålda-fynd"}])
+        bot = vb.Bot(make_cfg(), [], FakeClient(), store, [])
+        with mock.patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "tok"}), mock.patch.object(vb, "discord_api", api), \
+                self.assertLogs("vinted-bot", "INFO"):
+            self.assertEqual(bot.discord_daily(now), ["tips", "sammanfattning"])
+            self.assertEqual(bot.discord_daily(now), [])                     # en gång per dag
+        posts = {path: p["embeds"][0] for m, path, p in calls if m == "POST"}
+        self.assertIn(posts["/channels/1/messages"]["description"], vb.RESELL_TIPS)
+        summary = posts["/channels/2/messages"]["description"]
+        self.assertIn("**2 fynd** idag med möjlig vinst på totalt **1 400 kr**", summary)
+        self.assertIn("Snabbast: Moncler – sålt inom 5 min.", summary)
 
     def test_teaser_goes_to_the_sold_channel_with_the_bot(self):
         cfg = make_cfg()
