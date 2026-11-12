@@ -1598,6 +1598,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS join_requests (
                 user_id INTEGER, chat_id TEXT, name TEXT, ts INTEGER, status TEXT,
                 PRIMARY KEY (user_id, chat_id));
+            -- Rabattkoder för den som bjudit in 5 personer till Discord: halva priset för VIP.
+            CREATE TABLE IF NOT EXISTS referral_codes (
+                discord_user TEXT PRIMARY KEY, code TEXT UNIQUE, created INTEGER, used_by INTEGER, used_at INTEGER);
             CREATE TABLE IF NOT EXISTS sent (
                 chat_id TEXT, message_id INTEGER, item_id INTEGER, kind TEXT, html TEXT, url TEXT,
                 ts INTEGER, checks INTEGER NOT NULL DEFAULT 0, status TEXT,
@@ -1736,6 +1739,36 @@ class Store:
     def set_join_status(self, user_id, chat_id: str, status: str) -> None:
         self.db.execute("UPDATE join_requests SET status = ? WHERE user_id = ? AND chat_id = ?", (status, user_id, chat_id))
         self.db.commit()
+
+    def referral_code(self, discord_user: str) -> str | None:
+        row = self.db.execute("SELECT code FROM referral_codes WHERE discord_user = ?", (discord_user,)).fetchone()
+        return row[0] if row else None
+
+    def add_referral_code(self, discord_user: str) -> str:
+        """Ny engångskod, t.ex. VIP50-K7Q2MX (eller den personen redan har)."""
+        if existing := self.referral_code(discord_user):
+            return existing
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # inga lättförväxlade tecken som O/0 och I/1
+        while True:
+            code = "VIP50-" + "".join(random.SystemRandom().choice(alphabet) for _ in range(6))
+            try:
+                self.db.execute("INSERT INTO referral_codes (discord_user, code, created) VALUES (?, ?, ?)",
+                                (discord_user, code, int(time.time())))
+                self.db.commit()
+                return code
+            except sqlite3.IntegrityError:
+                continue  # samma kod fanns redan – slumpa igen
+
+    def redeem_referral_code(self, code: str, telegram_user: int) -> bool:
+        """Lös in koden för den här personen. True om den gäller (oanvänd, eller redan hens)."""
+        row = self.db.execute("SELECT used_by FROM referral_codes WHERE code = ?", (code.upper(),)).fetchone()
+        if not row or (row[0] is not None and row[0] != telegram_user):
+            return False
+        if row[0] is None:
+            self.db.execute("UPDATE referral_codes SET used_by = ?, used_at = ? WHERE code = ?",
+                            (telegram_user, int(time.time()), code.upper()))
+            self.db.commit()
+        return True
 
     def members(self, chat_id: str) -> list[tuple[int, str]]:
         return self.db.execute("SELECT user_id, name FROM members WHERE chat_id = ? ORDER BY ts DESC", (chat_id,)).fetchall()
@@ -2863,7 +2896,8 @@ class LegitListener:
         pay = (store.get_setting("join:payinfo") or "").strip()
         first = f"1. Betala: {escape(pay, quote=False)}" if pay else "1. Betala enligt instruktionerna du fått från ägaren."
         return [first, "2. Skicka en <b>skärmdump på betalningen</b> här i chatten.",
-                "När betalningen är kollad släpps du in direkt och får ett meddelande här."]
+                "När betalningen är kollad släpps du in direkt och får ett meddelande här.",
+                "🎟️ Har du en rabattkod (VIP50-…)? Skriv den här först, så betalar du halva priset."]
 
     def join_request(self, req: dict, store: "Store") -> None:
         """Någon har ansökt via länken: be om skärmdump på betalningen och säg till ägaren."""
@@ -2902,12 +2936,23 @@ class LegitListener:
         self.last_command[user_id] = now
         image = "photo" in msg or str((msg.get("document") or {}).get("mime_type") or "").startswith(("image/", "application/pdf"))
         if not image:
-            self.send_html(chat, "\n".join(["<b>📸 Skärmdump på betalningen</b>"] + self.pay_steps(store)))
+            code = re.search(r"\bVIP50-[A-Z0-9]{6}\b", str(msg.get("text") or msg.get("caption") or ""), re.I)
+            if code and store.redeem_referral_code(code.group(0), user_id):
+                store.set_setting(f"join:discount:{user_id}", code.group(0).upper())
+                self.send_html(chat, "\n".join(["<b>🎟️ Rabattkoden gäller!</b>",
+                                                "Du betalar <b>halva priset</b> för VIP. Betala halva summan och skicka "
+                                                "en skärmdump på betalningen här."]))
+            elif code:
+                self.send_html(chat, "Den rabattkoden finns inte eller är redan använd av någon annan.")
+            else:
+                self.send_html(chat, "\n".join(["<b>📸 Skärmdump på betalningen</b>"] + self.pay_steps(store)))
             return True
         owner = self.owner(store)
         user = msg.get("from") or {}
-        caption = "\n".join([f"<b>💸 Betalning från</b> {self.mention(user_id, name, str(user.get('username') or ''))}",
-                             "Släpp in?"])
+        discount = store.get_setting(f"join:discount:{user_id}")
+        caption = "\n".join([f"<b>💸 Betalning från</b> {self.mention(user_id, name, str(user.get('username') or ''))}"]
+                            + ([f"🎟️ Rabattkod {discount}: <b>halva priset</b> (bjöd in 5 till Discord)"] if discount else [])
+                            + ["Släpp in?"])
         try:
             if not owner:
                 raise NotifyError(0, "ägaren okänd")
@@ -3441,6 +3486,8 @@ class DiscordListener:
     Kräver att "Message Content Intent" är påslagen för boten, annars är meddelandena tomma."""
 
     PER_DAY = 3
+    REFERRALS = 5        # så många som ska gå med via ens inbjudan för halva priset på VIP
+    INVITE_CHECK = 60    # sekunder mellan kollarna av serverns inbjudningar
 
     def __init__(self, token: str, db_path: Path, cfg: dict, searches: list[Search], tips: dict | None = None,
                  api=None, client=None):
@@ -3449,6 +3496,9 @@ class DiscordListener:
         self.helper = LegitListener("", db_path, cfg, searches, tips or {}, client=client)  # samma som i Telegram
         self.channels: dict[str, str | None] = {}
         self.warned_empty = False
+        self.guild_id: str | None = None
+        self.next_invites = 0.0
+        self.join_link = ""  # ansökningslänken (/lank), läses från databasen
 
     def run(self, until: float | None = None) -> None:
         store = Store(self.db_path)  # egen anslutning, eftersom lyssnaren har en egen tråd
@@ -3474,8 +3524,7 @@ class DiscordListener:
             key = "discord:channel:" + role
             found = store.get_setting(key)
             if not found and role == "welcome":
-                guilds = self.api(self.token, "GET", "/users/@me/guilds") or []
-                guild = os.environ.get("DISCORD_GUILD_ID") or (str(guilds[0]["id"]) if len(guilds) == 1 else None)
+                guild = self.guild()
                 info = self.api(self.token, "GET", f"/guilds/{guild}") if guild else None
                 found = str((info or {}).get("system_channel_id") or "") or None
             elif not found:
@@ -3486,12 +3535,21 @@ class DiscordListener:
             self.channels[role] = found
         return self.channels[role]
 
+    def guild(self) -> str | None:
+        if self.guild_id is None:
+            guilds = self.api(self.token, "GET", "/users/@me/guilds") or []
+            self.guild_id = os.environ.get("DISCORD_GUILD_ID") or (str(guilds[0]["id"]) if len(guilds) == 1 else "")
+        return self.guild_id or None
+
     def poll(self, store: "Store") -> bool:
         """Svarar på nya meddelanden. False = boten har inga kanaler att lyssna på."""
-        active = [r for r in ("prischeck", "legit-check", "welcome") if self.channel(store, r)]
+        active = [r for r in ("prischeck", "legit-check", "bjud-in", "welcome") if self.channel(store, r)]
         if not active:
             log.info("Discord: hittar varken #prischeck eller #legit-check – kör Bygg Discord-servern.")
             return False
+        if self.cfg.get("discord_referrals", True) and time.monotonic() >= self.next_invites:
+            self.next_invites = time.monotonic() + self.INVITE_CHECK
+            self.check_invites(store)
         for role in active:
             channel = self.channels[role]
             key = f"discord:last:{role}"
@@ -3533,8 +3591,86 @@ class DiscordListener:
             "message_reference": {"message_id": str(message["id"]), "fail_if_not_exists": False}})
         log.info("Discord: hälsade en ny medlem välkommen")
 
+    # ---- Bjud in 5 → halva priset på VIP ----
+
+    def invite_counts(self, store: "Store") -> dict[str, int]:
+        """Hur många som gått med via varje persons inbjudningar (högsta antalet som setts per inbjudan)."""
+        counts: dict[str, int] = {}
+        for _, value in store.settings_starting_with("discord:invite:"):
+            inviter, _, uses = value.partition(":")
+            counts[inviter] = counts.get(inviter, 0) + int(uses or 0)
+        return counts
+
+    def check_invites(self, store: "Store") -> list[str]:
+        """Läser serverns inbjudningar och ger rabattkod till dem som nått REFERRALS. Returnerar nya vinnare."""
+        guild = self.guild()
+        if not guild:
+            return []
+        self.join_link = next((v for _, v in store.settings_starting_with("join:link:")), "")
+        for invite in self.api(self.token, "GET", f"/guilds/{guild}/invites") or []:
+            inviter = str((invite.get("inviter") or {}).get("id") or "")
+            if not inviter or (invite.get("inviter") or {}).get("bot"):
+                continue
+            key = f"discord:invite:{invite.get('code')}"
+            seen = int((store.get_setting(key) or "0:0").partition(":")[2] or 0)
+            # Inbjudningar som tas bort eller går ut försvinner ur listan – det sparade antalet ligger kvar.
+            store.set_setting(key, f"{inviter}:{max(seen, int(invite.get('uses') or 0))}")
+        winners = []
+        for inviter, count in self.invite_counts(store).items():
+            if count >= self.REFERRALS and not store.referral_code(inviter):
+                code = store.add_referral_code(inviter)
+                winners.append(inviter)
+                self.send_code(inviter, code)
+                if channel := self.channels.get("bjud-in"):
+                    self.api(self.token, "POST", f"/channels/{channel}/messages", {
+                        "content": f"🎉 <@{inviter}> har bjudit in {self.REFERRALS} personer och får VIP för "
+                                   "**halva priset**! Bjud in du också – skriv något här för att se hur många du har.",
+                        "allowed_mentions": {"users": [inviter]}})
+                log.info("Discord: en medlem nådde %d inbjudningar och fick en rabattkod.", self.REFERRALS)
+        return winners
+
+    def send_code(self, user: str, code: str) -> bool:
+        """Skickar rabattkoden privat. False om personen inte tar emot privata meddelanden."""
+        link = f"\n👉 Ansök här: <{self.join_link}>" if self.join_link else ""
+        try:
+            dm = self.api(self.token, "POST", "/users/@me/channels", {"recipient_id": user})
+            self.api(self.token, "POST", f"/channels/{dm['id']}/messages", {"content": (
+                f"🎉 **Grattis!** {self.REFERRALS} personer har gått med via din inbjudan.\n"
+                f"Din rabattkod för VIP – **halva priset**: `{code}`\n"
+                "Ansök till Telegram-gruppen och skriv koden till boten innan du betalar. Koden fungerar en gång."
+                + link)})
+            return True
+        except (NotifyError, KeyError, TypeError):
+            return False
+
+    def invite_status(self, message: dict, channel: str, store: "Store") -> None:
+        user = str((message.get("author") or {}).get("id"))
+        count = self.invite_counts(store).get(user, 0)
+        if store.referral_code(user):
+            sent = self.send_code(user, store.referral_code(user))
+            lines = ["🎟️ Du har redan fått din rabattkod – " + ("jag skickade den igen i ett privat meddelande."
+                     if sent else "men jag kan inte skicka privata meddelanden till dig. Slå på *Tillåt direktmeddelanden "
+                     "från servermedlemmar* (högerklicka servern › Integritetsinställningar) och skriv här igen.")]
+        else:
+            left = self.REFERRALS - count
+            lines = [f"📨 Du har bjudit in **{count} av {self.REFERRALS}** som gått med.",
+                     f"Bjud in {left} till så får du **VIP för halva priset**!",
+                     "Så gör du: högerklicka på servern (eller tryck på servernamnet) › **Bjud in folk** › kopiera din "
+                     "länk och skicka den till kompisar. Bara de som går med via *din* länk räknas."]
+        self.api(self.token, "POST", f"/channels/{channel}/messages", {
+            "content": "\n".join(lines),
+            "message_reference": {"message_id": str(message["id"]), "fail_if_not_exists": False},
+            "allowed_mentions": {"parse": []}})
+
     def answer(self, role: str, message: dict, text: str, channel: str, store: "Store") -> None:
         user = str((message.get("author") or {}).get("id"))
+        self.join_link = next((v for _, v in store.settings_starting_with("join:link:")), "")
+        if role == "bjud-in":
+            now = time.monotonic()
+            if now - self.helper.last_by_user.get(("bjud-in", user), -1e9) >= 5:  # spamskydd
+                self.helper.last_by_user[("bjud-in", user)] = now
+                self.invite_status(message, channel, store)
+            return
         item_id = item_id_in(text) if role == "legit-check" else None
         if role == "legit-check" and not item_id:
             return  # vanligt snack eller bilder – det svarar medlemmarna på

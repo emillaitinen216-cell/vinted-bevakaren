@@ -90,6 +90,15 @@ def layout(link: str) -> list[tuple[str, list[tuple[str, str, bool, str]]]]:
                 "",
                 "Du har 3 gratis prischeckar per dag. Obegränsat i <#vip-telegram>.",
             ])),
+            ("bjud-in", "Bjud in 5 – få VIP för halva priset", False, "\n".join([
+                "📨 **Bjud in 5 vänner – få VIP för halva priset!**",
+                "",
+                "1. Högerklicka på servern (eller tryck på servernamnet) › **Bjud in folk** › kopiera din länk.",
+                "2. Skicka länken till kompisar som gillar att köpa och sälja kläder.",
+                "3. När 5 har gått med via *din* länk skickar boten en rabattkod till dig privat.",
+                "",
+                "Skriv vad som helst här för att se hur många du har bjudit in.",
+            ])),
             ("legit-check", "Osäker på om något är äkta? Lägg upp bilder här", False, "\n".join([
                 "🔍 **Legit check**",
                 "",

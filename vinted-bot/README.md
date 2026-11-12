@@ -415,6 +415,11 @@ ingen webhook. Boten gör då dessutom det här i Discord:
   3 gratis per person och dag. Annat som skrivs i kanalen lämnas åt medlemmarna.
 - **👋 Välkomsthälsning:** när någon går med svarar boten på Discords "gick med"-meddelande
   med var man börjar.
+- **📨 Bjud in 5 – VIP för halva priset:** boten räknar hur många som gått med via varje
+  medlems egna inbjudningslänkar (kollas varje minut). Vid 5 får medlemmen en engångskod
+  (`VIP50-…`) privat. Koden skrivs till Telegram-boten i ansökan, och skärmdumpen till dig
+  visar då *Rabattkod: halva priset*. I #bjud-in ser man hur många man har bjudit in.
+  Stängs av med `discord_referrals: false`.
 - **🏆 Veckans bästa fynd** i #sålda-fynd varje söndagskväll: veckans tre största fynd som hann säljas.
 - **💡 Dagens resell-tips** i #tips varje morgon (efter kl. 8), 30 olika tips som går runt.
 - **📊 Dagens fynd i VIP** i #sålda-fynd varje kväll (samma tid som Dagens bästa): antal

@@ -2886,6 +2886,21 @@ class JoinRequestTests(unittest.TestCase):
         self.press(7, "join:ok:7")                                          # dubbeltryck: inget nytt anrop
         self.assertNotIn("approveChatJoinRequest", [m for m, _ in self.sent])
 
+    def test_referral_code_gives_half_price_in_the_application(self):
+        code = self.store.add_referral_code("discord-7")
+        self.request()
+        self.sent.clear()
+        self.private(2, 7, f"min kod: {code.lower()}")
+        self.assertIn("Rabattkoden gäller", self.sent[-1][1]["text"])
+        self.private(3, 7, photo=[{"file_id": "x"}])
+        method, copy = self.sent[-2]
+        self.assertEqual(method, "copyMessage")
+        self.assertIn(f"Rabattkod {code}: <b>halva priset</b>", copy["caption"])
+        self.private(4, 8, "hej")                                           # ingen ansökan: inget svar
+        self.request(5, user=9)
+        self.private(6, 9, code)                                            # redan använd av någon annan
+        self.assertIn("redan använd", self.sent[-1][1]["text"])
+
     def test_only_the_owner_decides_and_decline_works(self):
         self.request()
         self.sent.clear()
@@ -2969,7 +2984,7 @@ class DiscordSetupTests(unittest.TestCase):
         import discord_setup
         api, calls = self.fake_discord()
         created = discord_setup.build("tok", None, "https://t.me/+ansok", api=api, pause=0)
-        self.assertEqual(created, ["välkommen", "regler", "vip-telegram", "sålda-fynd", "snack", "prischeck", "legit-check",
+        self.assertEqual(created, ["välkommen", "regler", "vip-telegram", "sålda-fynd", "snack", "prischeck", "bjud-in", "legit-check",
                                    "mina-vinster", "köp-sälj-byt", "tips"])
         made = {p["name"]: p for m, path, p in calls if m == "POST" and path.endswith("/channels")}
         self.assertEqual(made["regler"]["permission_overwrites"],
@@ -3047,6 +3062,43 @@ class DiscordSetupTests(unittest.TestCase):
         self.assertIn("Välkommen <@9>", welcome["content"])
         self.assertIn("<#66>", welcome["content"])
         self.assertEqual(welcome["allowed_mentions"], {"users": ["9"]})
+
+    def test_five_invites_give_a_half_price_code_once(self):
+        store, listener, inbox, calls = self.discord_listener([{"id": "88", "type": 0, "name": "bjud-in"}])
+        invites = [{"code": "abc", "uses": 3, "inviter": {"id": "7"}}, {"code": "def", "uses": 1, "inviter": {"id": "8"}}]
+        real = listener.api
+
+        def discord(token, method, path, payload=None, timeout=20):
+            if path == "/guilds/9/invites":
+                calls.append((method, path, payload))
+                return [dict(i) for i in invites]
+            if path == "/users/@me/channels":
+                calls.append((method, path, payload))
+                return {"id": "dm" + payload["recipient_id"]}
+            return real(token, method, path, payload, timeout)
+
+        listener.api = discord
+        listener.channel(store, "bjud-in")
+        self.assertEqual(listener.check_invites(store), [])
+        inbox["88"] = [[{"id": "1", "content": "hur många?", "author": {"id": "7"}}]]
+        listener.poll(store)                                                 # första gången: bara markera
+        inbox["88"] = [[{"id": "2", "content": "hur många?", "author": {"id": "7"}}]]
+        listener.next_invites = 1e18
+        listener.poll(store)
+        status = [p for m, path, p in calls if m == "POST" and path == "/channels/88/messages"][-1]["content"]
+        self.assertIn("**3 av 5**", status)
+        invites[0]["uses"] = 2                                               # en inbjudan ändras – max räknas
+        invites.append({"code": "ghi", "uses": 2, "inviter": {"id": "7"}})
+        self.assertEqual(listener.check_invites(store), ["7"])
+        code = store.referral_code("7")
+        self.assertRegex(code, r"^VIP50-[A-Z2-9]{6}$")
+        dm = [p for m, path, p in calls if path == "/channels/dm7/messages"][0]["content"]
+        self.assertIn(code, dm)
+        self.assertIn("https://t.me/+ansok", dm)
+        self.assertEqual(listener.check_invites(store), [])                  # bara en gång
+        self.assertTrue(store.redeem_referral_code(code.lower(), 555))
+        self.assertTrue(store.redeem_referral_code(code, 555))               # samma person igen går bra
+        self.assertFalse(store.redeem_referral_code(code, 556))              # någon annan: nej
 
     def test_warns_once_when_message_content_is_missing(self):
         store, listener, inbox, calls = self.discord_listener([{"id": "55", "type": 0, "name": "prischeck"}])
