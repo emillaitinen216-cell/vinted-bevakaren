@@ -3731,7 +3731,10 @@ class DiscordListener:
             log.info("Discord: en VIP-medlem kopplade sitt konto")
         elif not role:
             reply = "VIP-rollen finns inte än – be ägaren köra Bygg Discord-servern."
+            log.warning("Discord: hittar ingen roll som heter %s – kör Bygg Discord-servern.", DISCORD_VIP_ROLE)
         else:
+            log.info("Discord: en kod i #verifiera stämde inte (%s)", "ingen kod i meddelandet" if not code else
+                     "okänd eller redan använd av någon annan")
             reply = (f"<@{user}> koden stämmer inte. Skriv **/discord** privat till Telegram-boten för att få din kod "
                      "(bara för VIP-medlemmar).")
         self.api(self.token, "POST", f"/channels/{channel}/messages",
@@ -4357,7 +4360,8 @@ class Bot:
         return self.discord_post("bjud-in", Message("📨 Veckans inbjudare", lines, ""))
 
     def discord_vip_check(self) -> int:
-        """Tar bort VIP-rollen i Discord från dem som inte längre är med i Telegram-gruppen."""
+        """Ser till att kopplade VIP-medlemmar har rollen i Discord (ger den igen om den saknas) och tar bort den
+        från dem som inte längre är med i Telegram-gruppen. Returnerar antalet borttagna."""
         token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
         tg = next((n for n in self.notifiers if isinstance(n, TelegramNotifier)), None)
         links = self.store.discord_links() if self.store else []
@@ -4374,6 +4378,12 @@ class Bot:
             except (NotifyError, OSError):
                 continue  # osäkert – försök igen i morgon
             if member_status_ok((info or {}).get("result") or {}):
+                try:  # ofarligt om rollen redan finns – rättar till om den försvunnit eller aldrig kom fram
+                    discord_api(token, "PUT", f"/guilds/{guild}/members/{discord_user}/roles/{role}")
+                except NotifyError as e:
+                    log.warning("Discord: kunde inte ge VIP-rollen (Discord svarade %s)%s", e.status,
+                                " – flytta botens roll ovanför 💎 VIP under Serverinställningar › Roller"
+                                if e.status == 403 else "")
                 continue
             try:
                 discord_api(token, "DELETE", f"/guilds/{guild}/members/{discord_user}/roles/{role}")
@@ -4460,8 +4470,9 @@ class Bot:
             tip = RESELL_TIPS[now.toordinal() % len(RESELL_TIPS)]
             if self.discord_post("tips", Message("💡 Dagens resell-tips", [tip], "")):
                 done.append("tips")
-        if now.hour >= 8 and get("discord:vipcheck:last") != today:  # en gång per dag
-            put("discord:vipcheck:last", today)
+        hour_key = f"{today}T{now.hour:02d}"
+        if get("discord:vipcheck:last") != hour_key:  # en gång i timmen
+            put("discord:vipcheck:last", hour_key)
             if self.discord_vip_check():
                 done.append("VIP-kontroll")
         if now.weekday() == 0 and now.hour >= 8 and get("discord:market:last") != today:

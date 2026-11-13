@@ -3174,6 +3174,7 @@ class DiscordSetupTests(unittest.TestCase):
             done = bot.discord_daily(sunday)
         self.assertIn("VIP-kontroll", done)
         self.assertIn(("DELETE", "/guilds/9/members/72/roles/500", None), calls)
+        self.assertIn(("PUT", "/guilds/9/members/71/roles/500", None), calls)   # kvar i Telegram: rollen ges igen
         self.assertEqual(store.discord_links(), [(1, "71")])
         self.assertIn("veckans inbjudare", done)
         board = [p["embeds"][0]["description"] for m, path, p in calls if path == "/channels/88/messages"][0]
