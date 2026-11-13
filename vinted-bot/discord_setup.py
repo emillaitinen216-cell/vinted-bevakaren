@@ -272,6 +272,7 @@ def ensure_roles(token: str, guild_id: str, api) -> dict[str, str]:
         roles[name] = str(role["id"])
     me = api(token, "GET", "/users/@me") or {}
     member = api(token, "GET", f"/guilds/{guild_id}/members/{me.get('id')}") or {}
+    all_roles = api(token, "GET", f"/guilds/{guild_id}/roles") or all_roles  # nya roller flyttar de andra uppåt
     positions = {str(r["id"]): int(r.get("position") or 0) for r in all_roles}
     top = max((positions.get(str(r), 0) for r in member.get("roles") or []), default=0)
     if top > len(ROLES):
