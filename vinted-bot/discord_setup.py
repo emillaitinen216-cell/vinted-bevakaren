@@ -222,14 +222,16 @@ def build(token: str, guild_id: str | None, link: str, api=vb.discord_api, pause
 def automod(token: str, guild_id: str, api) -> list[str]:
     """AutoMod – Discords skydd mot spam och bedragare. Varje regel för sig, så att ett fel inte stoppar resten."""
     try:
-        existing = {r.get("name") for r in api(token, "GET", f"/guilds/{guild_id}/auto-moderation/rules") or []}
+        rules = api(token, "GET", f"/guilds/{guild_id}/auto-moderation/rules") or []
+        existing = {r.get("name") for r in rules}
+        types = {r.get("trigger_type") for r in rules}
     except vb.NotifyError as e:
         print(f"Kunde inte läsa AutoMod (Discord svarade {e.status}) – gör det under Serverinställningar › AutoMod.")
         return []
     made = []
     for name, rule in AUTOMOD:
-        if name in existing:
-            continue
+        if name in existing or (rule["trigger_type"] in (3, 5) and rule["trigger_type"] in types):
+            continue  # spam- och nämningsregler får bara finnas en av varje – Discord har ofta redan en
         payload = {"name": name, "enabled": True, **rule}
         for attempt in (payload, {**payload, "actions": [{"type": 1}]}):  # utan eget meddelande om det nekas
             try:
