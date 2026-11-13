@@ -215,15 +215,33 @@ def build(token: str, guild_id: str | None, link: str, api=vb.discord_api, pause
             api(token, "PUT", f"/channels/{channels[name]}/pins/{msg['id']}")
         except vb.NotifyError:
             pass  # fästa är bara en bonus
-    try:  # AutoMod – skydd mot spam och bedragare
-        rules = {r.get("name") for r in api(token, "GET", f"/guilds/{guild_id}/auto-moderation/rules") or []}
-        for name, rule in AUTOMOD:
-            if name not in rules:
-                api(token, "POST", f"/guilds/{guild_id}/auto-moderation/rules", {"name": name, "enabled": True, **rule})
-                print(f"Slog på AutoMod: {name}.")
-    except vb.NotifyError as e:  # t.ex. om Discord ändrat reglerna – kanalerna är ändå klara
-        print(f"Kunde inte slå på AutoMod (Discord svarade {e.status}) – gör det under Serverinställningar › AutoMod.")
+    automod(token, guild_id, api)
     return created
+
+
+def automod(token: str, guild_id: str, api) -> list[str]:
+    """AutoMod – Discords skydd mot spam och bedragare. Varje regel för sig, så att ett fel inte stoppar resten."""
+    try:
+        existing = {r.get("name") for r in api(token, "GET", f"/guilds/{guild_id}/auto-moderation/rules") or []}
+    except vb.NotifyError as e:
+        print(f"Kunde inte läsa AutoMod (Discord svarade {e.status}) – gör det under Serverinställningar › AutoMod.")
+        return []
+    made = []
+    for name, rule in AUTOMOD:
+        if name in existing:
+            continue
+        payload = {"name": name, "enabled": True, **rule}
+        for attempt in (payload, {**payload, "actions": [{"type": 1}]}):  # utan eget meddelande om det nekas
+            try:
+                api(token, "POST", f"/guilds/{guild_id}/auto-moderation/rules", attempt)
+                print(f"Slog på AutoMod: {name}.")
+                made.append(name)
+                break
+            except vb.NotifyError as e:
+                reason = " ".join(e.detail.split())[:200]
+        else:
+            print(f"Kunde inte slå på AutoMod-regeln {name} – Discord svarade: {reason}")
+    return made
 
 
 def join_link(db: Path) -> str:
