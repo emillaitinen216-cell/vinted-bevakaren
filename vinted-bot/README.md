@@ -420,6 +420,13 @@ ingen webhook. Boten gör då dessutom det här i Discord:
   (`VIP50-…`) privat. Koden skrivs till Telegram-boten i ansökan, och skärmdumpen till dig
   visar då *Rabattkod: halva priset*. I #bjud-in ser man hur många man har bjudit in.
   Stängs av med `discord_referrals: false`.
+- **📊 Veckans inbjudare:** varje söndag de fem som bjudit in flest under veckan, i #bjud-in.
+- **💎 VIP-roll:** VIP-medlemmar skriver `/discord` privat till Telegram-boten och klistrar in
+  koden (`DC-…`) i #verifiera. De får då rollen 💎 VIP (guld, visas för sig) och ser den
+  dolda kanalen #vip-snack. Koden tas bort direkt. En gång per dag tas rollen bort från dem
+  som inte längre är med i Telegram-gruppen.
+- **🛡️ AutoMod:** Bygg Discord-servern slår på Discords inbyggda skydd mot spam,
+  massnämningar, kända bedrägerilänkar (t.ex. "free nitro") och grova ord.
 - **🏆 Veckans bästa fynd** i #sålda-fynd varje söndagskväll: veckans tre största fynd som hann säljas.
 - **💡 Dagens resell-tips** i #tips varje morgon (efter kl. 8), 30 olika tips som går runt.
 - **📊 Dagens fynd i VIP** i #sålda-fynd varje kväll (samma tid som Dagens bästa): antal

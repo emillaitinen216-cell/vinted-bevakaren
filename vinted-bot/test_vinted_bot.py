@@ -2429,13 +2429,14 @@ class TuneAndFollowTests(unittest.TestCase):
             self.deal("Snabb", 200 + i, sold_after=600)                   # alla sålda på 10 min
         self.deal("Lugn", 300, sold_after=600)                            # för få för att säga något
         bot = vb.Bot(self.cfg, [slow, fast, quiet], FakeClient(), self.store, [])
+        today = datetime.now(vb.STOCKHOLM).replace(hour=12, minute=0, second=0, microsecond=0)  # oberoende av datum
         with self.assertLogs("vinted-bot", "INFO"):
-            changed = bot.auto_tune(datetime(2026, 11, 10, 12, tzinfo=vb.STOCKHOLM))
+            changed = bot.auto_tune(today)
         self.assertEqual(sorted(changed), ["Slö", "Snabb"])
         self.assertEqual((slow.min_profit, fast.min_profit, quiet.min_profit), (110, 95, 100))
-        self.assertEqual(bot.auto_tune(datetime(2026, 11, 10, 18, tzinfo=vb.STOCKHOLM)), [])   # en gång per dygn
-        for day in range(11, 20):                                         # taket: högst 150 %
-            bot.auto_tune(datetime(2026, 11, day, 12, tzinfo=vb.STOCKHOLM))
+        self.assertEqual(bot.auto_tune(today.replace(hour=18)), [])      # en gång per dygn
+        for day in range(1, 10):                                          # taket: högst 150 %
+            bot.auto_tune(today + vb.timedelta(days=day))
         self.assertEqual(slow.min_profit, 150)
         self.assertEqual(vb.Bot(make_cfg(auto_tune=False), [slow], FakeClient(), self.store, []).auto_tune(), [])
 
@@ -2901,6 +2902,13 @@ class JoinRequestTests(unittest.TestCase):
         self.private(6, 9, code)                                            # redan använd av någon annan
         self.assertIn("redan använd", self.sent[-1][1]["text"])
 
+    def test_discord_command_gives_vip_members_a_link_code(self):
+        self.api.members.add(7)
+        self.private(1, 7, "/discord")
+        self.assertRegex(self.sent[-1][1]["text"], r"<code>DC-[A-Z2-9]{6}</code>")
+        self.private(2, 8, "/discord")                                      # inte med i gruppen
+        self.assertIn("för VIP-medlemmar", self.sent[-1][1]["text"])
+
     def test_only_the_owner_decides_and_decline_works(self):
         self.request()
         self.sent.clear()
@@ -2965,6 +2973,7 @@ class DiscordSetupTests(unittest.TestCase):
     def fake_discord(self, existing=()):
         calls, ids = [], iter(range(1000, 2000))
         channels = list(existing)
+        made_lists: dict = {}
 
         def api(token, method, path, payload=None, timeout=20):
             calls.append((method, path, payload))
@@ -2972,10 +2981,14 @@ class DiscordSetupTests(unittest.TestCase):
                 return [{"id": "9"}]
             if method == "GET" and path.endswith("/channels"):
                 return channels
+            if method == "GET" and path in made_lists:
+                return made_lists[path]
             if method == "POST":
                 made = {"id": str(next(ids)), **(payload or {})}
                 if path.endswith("/channels"):
                     channels.append(made)
+                elif path.endswith(("/roles", "/rules")):
+                    made_lists.setdefault(path, []).append(made)
                 return made
             return None
         return api, calls
@@ -2985,11 +2998,17 @@ class DiscordSetupTests(unittest.TestCase):
         api, calls = self.fake_discord()
         created = discord_setup.build("tok", None, "https://t.me/+ansok", api=api, pause=0)
         self.assertEqual(created, ["välkommen", "regler", "vip-telegram", "sålda-fynd", "snack", "prischeck", "bjud-in", "legit-check",
-                                   "mina-vinster", "köp-sälj-byt", "tips"])
+                                   "mina-vinster", "köp-sälj-byt", "tips", "verifiera", "vip-snack"])
         made = {p["name"]: p for m, path, p in calls if m == "POST" and path.endswith("/channels")}
         self.assertEqual(made["regler"]["permission_overwrites"],
                          [{"id": "9", "type": 0, "deny": str(discord_setup.READ_ONLY)}])
         self.assertNotIn("permission_overwrites", made["snack"])
+        vip_role = next(p for m, path, p in calls if path == "/guilds/9/roles" and m == "POST")
+        self.assertEqual(vip_role["name"], "💎 VIP")
+        hidden = made["vip-snack"]["permission_overwrites"]
+        self.assertEqual(hidden[0], {"id": "9", "type": 0, "deny": str(discord_setup.VIEW)})
+        rules = [p["name"] for m, path, p in calls if path.endswith("/auto-moderation/rules") and m == "POST"]
+        self.assertEqual(rules, ["Spam", "Massnämningar", "Bedrägerilänkar", "Grova ord"])
         posts = [p["content"] for m, path, p in calls if m == "POST" and path.endswith("/messages")]
         vip = next(t for t in posts if "VIP" in t)
         self.assertIn("https://t.me/+ansok", vip)
@@ -3099,6 +3118,65 @@ class DiscordSetupTests(unittest.TestCase):
         self.assertTrue(store.redeem_referral_code(code.lower(), 555))
         self.assertTrue(store.redeem_referral_code(code, 555))               # samma person igen går bra
         self.assertFalse(store.redeem_referral_code(code, 556))              # någon annan: nej
+
+    def test_vip_verification_gives_role_and_hides_the_code(self):
+        store, listener, inbox, calls = self.discord_listener([{"id": "77", "type": 0, "name": "verifiera"}])
+        real = listener.api
+
+        def discord(token, method, path, payload=None, timeout=20):
+            if path == "/guilds/9/roles":
+                return [{"id": "500", "name": "💎 VIP"}]
+            if method in ("PUT", "DELETE"):
+                calls.append((method, path, payload))
+                return None
+            return real(token, method, path, payload, timeout)
+
+        listener.api = discord
+        code = store.discord_link_code(4242)
+        self.assertEqual(store.discord_link_code(4242), code)                # samma kod tills den används
+        listener.poll(store)                                                 # första gången
+        inbox["77"] = [[{"id": "10", "content": f"här: {code.lower()}", "author": {"id": "7"}},
+                        {"id": "11", "content": "DC-FEL123", "author": {"id": "8"}}]]
+        listener.next_invites = 1e18
+        listener.poll(store)
+        self.assertIn(("DELETE", "/channels/77/messages/10", None), calls)   # koden syns inte kvar
+        self.assertIn(("PUT", "/guilds/9/members/7/roles/500", None), calls)
+        self.assertNotIn(("PUT", "/guilds/9/members/8/roles/500", None), calls)
+        replies = [p["content"] for m, path, p in calls if m == "POST" and path == "/channels/77/messages"]
+        self.assertIn("är nu **💎 VIP**", replies[0])
+        self.assertIn("koden stämmer inte", replies[1])
+        self.assertEqual(store.discord_links(), [(4242, "7")])
+        self.assertIsNone(store.claim_discord_link(code, "99"))              # någon annan kan inte ta koden
+
+    def test_vip_role_is_removed_when_leaving_telegram_and_weekly_invite_board(self):
+        store, _ = self.store()
+        store.discord_link_code(1)
+        store.claim_discord_link(store.discord_link_code(1), "71")
+        store.claim_discord_link(store.discord_link_code(2), "72")
+        store.set_setting("discord:vip_role", "500")
+        for code, inviter, uses in (("a", "7", 4), ("b", "8", 2), ("c", "7", 1)):
+            store.set_setting(f"discord:invite:{code}", f"{inviter}:{uses}")
+        api, calls = self.fake_discord([{"id": "88", "type": 0, "name": "bjud-in"}])
+        posted = []
+
+        def telegram(url, payload, timeout=20):
+            posted.append(payload)
+            return {"ok": True, "result": {"status": "member" if payload["user_id"] == 1 else "left"}}
+
+        tg = vb.TelegramNotifier(TOKEN, "-1001", store=store)
+        bot = vb.Bot(make_cfg(), [], FakeClient(), store, [tg])
+        sunday = datetime(2026, 11, 15, 9, tzinfo=vb.STOCKHOLM)
+        with mock.patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "tok"}), mock.patch.object(vb, "discord_api", api), \
+                mock.patch.object(vb, "http_post_json", telegram), self.assertLogs("vinted-bot", "INFO"):
+            done = bot.discord_daily(sunday)
+        self.assertIn("VIP-kontroll", done)
+        self.assertIn(("DELETE", "/guilds/9/members/72/roles/500", None), calls)
+        self.assertEqual(store.discord_links(), [(1, "71")])
+        self.assertIn("veckans inbjudare", done)
+        board = [p["embeds"][0]["description"] for m, path, p in calls if path == "/channels/88/messages"][0]
+        self.assertTrue(board.startswith("🥇 <@7> – 5 nya\n🥈 <@8> – 2 nya"), board)
+        store.set_setting("discord:invite:a", "7:6")                          # nästa vecka: bara det nya räknas
+        self.assertEqual(json.loads(store.get_setting("discord:invites_snapshot")), {"7": 5, "8": 2})
 
     def test_warns_once_when_message_content_is_missing(self):
         store, listener, inbox, calls = self.discord_listener([{"id": "55", "type": 0, "name": "prischeck"}])

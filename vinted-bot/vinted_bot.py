@@ -796,6 +796,33 @@ def discord_channel(token: str, name: str, guild_id: str | None = None, api=None
     return None
 
 
+DISCORD_VIP_ROLE = "💎 VIP"
+
+
+def discord_guild(token: str, api=None) -> str | None:
+    """Serverns id: DISCORD_GUILD_ID, eller den enda server boten är med i."""
+    if guild := os.environ.get("DISCORD_GUILD_ID"):
+        return guild
+    guilds = (api or discord_api)(token, "GET", "/users/@me/guilds") or []
+    return str(guilds[0]["id"]) if len(guilds) == 1 else None
+
+
+def discord_role(token: str, guild: str, name: str = DISCORD_VIP_ROLE, api=None) -> str | None:
+    for role in (api or discord_api)(token, "GET", f"/guilds/{guild}/roles") or []:
+        if role.get("name") == name:
+            return str(role["id"])
+    return None
+
+
+def invite_counts(store: "Store") -> dict[str, int]:
+    """Hur många som gått med via varje persons Discord-inbjudningar (högsta antalet som setts per inbjudan)."""
+    counts: dict[str, int] = {}
+    for _, value in store.settings_starting_with("discord:invite:"):
+        inviter, _, uses = value.partition(":")
+        counts[inviter] = counts.get(inviter, 0) + int(uses or 0)
+    return counts
+
+
 def member_status_ok(info: dict) -> bool:
     """getChatMember: med i gruppen? "restricted" räknas bara om personen inte har lämnat."""
     status = info.get("status") if isinstance(info, dict) else None
@@ -1601,6 +1628,9 @@ class Store:
             -- Rabattkoder för den som bjudit in 5 personer till Discord: halva priset för VIP.
             CREATE TABLE IF NOT EXISTS referral_codes (
                 discord_user TEXT PRIMARY KEY, code TEXT UNIQUE, created INTEGER, used_by INTEGER, used_at INTEGER);
+            -- VIP i Telegram kopplade till Discord (/discord ger en kod som klistras in i #verifiera).
+            CREATE TABLE IF NOT EXISTS discord_links (
+                code TEXT PRIMARY KEY, telegram_user INTEGER UNIQUE, discord_user TEXT, created INTEGER, linked INTEGER);
             CREATE TABLE IF NOT EXISTS sent (
                 chat_id TEXT, message_id INTEGER, item_id INTEGER, kind TEXT, html TEXT, url TEXT,
                 ts INTEGER, checks INTEGER NOT NULL DEFAULT 0, status TEXT,
@@ -1769,6 +1799,41 @@ class Store:
                             (telegram_user, int(time.time()), code.upper()))
             self.db.commit()
         return True
+
+    def discord_link_code(self, telegram_user: int) -> str:
+        """Koden för att koppla personens Discord-konto (samma kod tills den använts)."""
+        row = self.db.execute("SELECT code FROM discord_links WHERE telegram_user = ?", (telegram_user,)).fetchone()
+        if row:
+            return row[0]
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        while True:
+            code = "DC-" + "".join(random.SystemRandom().choice(alphabet) for _ in range(6))
+            try:
+                self.db.execute("INSERT INTO discord_links (code, telegram_user, created) VALUES (?, ?, ?)",
+                                (code, telegram_user, int(time.time())))
+                self.db.commit()
+                return code
+            except sqlite3.IntegrityError:
+                continue
+
+    def claim_discord_link(self, code: str, discord_user: str) -> int | None:
+        """Kopplar koden till Discord-kontot. Returnerar Telegram-användaren, eller None om koden inte gäller."""
+        row = self.db.execute("SELECT telegram_user, discord_user FROM discord_links WHERE code = ?",
+                              (code.upper(),)).fetchone()
+        if not row or (row[1] and row[1] != discord_user):
+            return None
+        self.db.execute("UPDATE discord_links SET discord_user = ?, linked = ? WHERE code = ?",
+                        (discord_user, int(time.time()), code.upper()))
+        self.db.commit()
+        return row[0]
+
+    def discord_links(self) -> list[tuple[int, str]]:
+        return self.db.execute("SELECT telegram_user, discord_user FROM discord_links "
+                               "WHERE discord_user IS NOT NULL").fetchall()
+
+    def remove_discord_link(self, telegram_user: int) -> None:
+        self.db.execute("DELETE FROM discord_links WHERE telegram_user = ?", (telegram_user,))
+        self.db.commit()
 
     def members(self, chat_id: str) -> list[tuple[int, str]]:
         return self.db.execute("SELECT user_id, name FROM members WHERE chat_id = ? ORDER BY ts DESC", (chat_id,)).fetchall()
@@ -2554,6 +2619,7 @@ def guide_text(searches: list[Search], cfg: dict) -> str:
         "<code>/sluta alla</code>)",
         "<code>/följ</code> + länk – följ en annons: du får besked när priset sänks eller när den blir såld",
         "<code>/följer</code> – visa annonserna du följer · <code>/avfölj 2</code> – sluta följa nr 2",
+        "<code>/discord</code> – få en kod som ger dig rollen 💎 VIP i vår Discord",
         "",
         "<b>Övriga kommandon – skriv i fliken General</b>",
         "<code>/legit</code> + länk – kolla vilken Vinted-annons som helst",
@@ -2790,6 +2856,17 @@ class LegitListener:
             self.owner_command(command, parts[1] if len(parts) > 1 else "", chat, store)
             return
         if private and self.applicant_message(msg, chat, user_id, store):
+            return
+        if private and command == "/discord":
+            if self.is_member(store, user_id):
+                code = store.discord_link_code(user_id)
+                self.send_html(chat, "\n".join([
+                    "<b>💎 Koppla Discord</b>",
+                    f"Din kod: <code>{code}</code>",
+                    "Klistra in koden i kanalen <b>#verifiera</b> i vår Discord, så får du rollen 💎 VIP och "
+                    "tillgång till #vip-snack. Koden fungerar för ett Discord-konto."]))
+            else:
+                self.send_html(chat, "💎 /discord är för VIP-medlemmar i Telegram-gruppen.")
             return
         if command in ("/alla", "/everyone", "/all") and chat in allowed and chat.startswith("-"):
             self.tag_everyone(msg, chat, store, parts[1] if len(parts) > 1 else "")
@@ -3543,7 +3620,7 @@ class DiscordListener:
 
     def poll(self, store: "Store") -> bool:
         """Svarar på nya meddelanden. False = boten har inga kanaler att lyssna på."""
-        active = [r for r in ("prischeck", "legit-check", "bjud-in", "welcome") if self.channel(store, r)]
+        active = [r for r in ("prischeck", "legit-check", "bjud-in", "verifiera", "welcome") if self.channel(store, r)]
         if not active:
             log.info("Discord: hittar varken #prischeck eller #legit-check – kör Bygg Discord-servern.")
             return False
@@ -3591,15 +3668,34 @@ class DiscordListener:
             "message_reference": {"message_id": str(message["id"]), "fail_if_not_exists": False}})
         log.info("Discord: hälsade en ny medlem välkommen")
 
+    # ---- VIP-rollen: kod från /discord i Telegram ----
+
+    def verify(self, message: dict, text: str, channel: str, store: "Store") -> None:
+        user = str((message.get("author") or {}).get("id"))
+        code = re.search(r"\bDC-[A-Z0-9]{6}\b", text, re.I)
+        try:  # koden ska inte ligga kvar synlig för andra
+            self.api(self.token, "DELETE", f"/channels/{channel}/messages/{message['id']}")
+        except NotifyError:
+            pass
+        guild = self.guild()
+        role = store.get_setting("discord:vip_role") or (discord_role(self.token, guild, api=self.api) if guild else None)
+        if code and role and store.claim_discord_link(code.group(0), user) is not None:
+            store.set_setting("discord:vip_role", role)
+            self.api(self.token, "PUT", f"/guilds/{guild}/members/{user}/roles/{role}")
+            reply = f"✅ <@{user}> är nu **💎 VIP**! Välkommen till VIP-snacket."
+            log.info("Discord: en VIP-medlem kopplade sitt konto")
+        elif not role:
+            reply = "VIP-rollen finns inte än – be ägaren köra Bygg Discord-servern."
+        else:
+            reply = (f"<@{user}> koden stämmer inte. Skriv **/discord** privat till Telegram-boten för att få din kod "
+                     "(bara för VIP-medlemmar).")
+        self.api(self.token, "POST", f"/channels/{channel}/messages",
+                 {"content": reply, "allowed_mentions": {"users": [user]}})
+
     # ---- Bjud in 5 → halva priset på VIP ----
 
     def invite_counts(self, store: "Store") -> dict[str, int]:
-        """Hur många som gått med via varje persons inbjudningar (högsta antalet som setts per inbjudan)."""
-        counts: dict[str, int] = {}
-        for _, value in store.settings_starting_with("discord:invite:"):
-            inviter, _, uses = value.partition(":")
-            counts[inviter] = counts.get(inviter, 0) + int(uses or 0)
-        return counts
+        return invite_counts(store)
 
     def check_invites(self, store: "Store") -> list[str]:
         """Läser serverns inbjudningar och ger rabattkod till dem som nått REFERRALS. Returnerar nya vinnare."""
@@ -3665,6 +3761,9 @@ class DiscordListener:
     def answer(self, role: str, message: dict, text: str, channel: str, store: "Store") -> None:
         user = str((message.get("author") or {}).get("id"))
         self.join_link = next((v for _, v in store.settings_starting_with("join:link:")), "")
+        if role == "verifiera":
+            self.verify(message, text, channel, store)
+            return
         if role == "bjud-in":
             now = time.monotonic()
             if now - self.helper.last_by_user.get(("bjud-in", user), -1e9) >= 5:  # spamskydd
@@ -4183,6 +4282,51 @@ class Bot:
             raise
         return True
 
+    def discord_invite_board(self) -> bool:
+        """Söndagar: veckans fem som bjudit in flest till Discord, i #bjud-in."""
+        totals = invite_counts(self.store)
+        before = json.loads(self.store.get_setting("discord:invites_snapshot") or "{}")
+        week = sorted(((n - int(before.get(u, 0)), u) for u, n in totals.items()), reverse=True)
+        week = [(n, u) for n, u in week if n > 0][:5]
+        self.store.set_setting("discord:invites_snapshot", json.dumps(totals))
+        if not week:
+            return False
+        medals = ["🥇", "🥈", "🥉", "4.", "5."]
+        lines = [f"{m} <@{u}> – {n} {'ny' if n == 1 else 'nya'}" for m, (n, u) in zip(medals, week)]
+        lines += ["", f"Bjud in {DiscordListener.REFERRALS} som går med → **VIP för halva priset**. "
+                      "Skriv något i kanalen för att se hur många du har."]
+        return self.discord_post("bjud-in", Message("📨 Veckans inbjudare", lines, ""))
+
+    def discord_vip_check(self) -> int:
+        """Tar bort VIP-rollen i Discord från dem som inte längre är med i Telegram-gruppen."""
+        token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+        tg = next((n for n in self.notifiers if isinstance(n, TelegramNotifier)), None)
+        links = self.store.discord_links() if self.store else []
+        if not token or not tg or not links:
+            return 0
+        guild = discord_guild(token)
+        role = self.store.get_setting("discord:vip_role") or (discord_role(token, guild) if guild else None)
+        if not guild or not role:
+            return 0
+        removed = 0
+        for telegram_user, discord_user in links:
+            try:
+                info = http_post_json(f"{tg.api}/getChatMember", {"chat_id": tg.chat_id, "user_id": telegram_user})
+            except (NotifyError, OSError):
+                continue  # osäkert – försök igen i morgon
+            if member_status_ok((info or {}).get("result") or {}):
+                continue
+            try:
+                discord_api(token, "DELETE", f"/guilds/{guild}/members/{discord_user}/roles/{role}")
+            except NotifyError as e:
+                if e.status != 404:  # 404: personen har lämnat Discord – ta bort kopplingen ändå
+                    continue
+            self.store.remove_discord_link(telegram_user)
+            removed += 1
+        if removed:
+            log.info("Discord: tog bort VIP-rollen från %d som inte längre är med i Telegram-gruppen.", removed)
+        return removed
+
     def discord_week(self, now: datetime) -> bool:
         """Söndagar: veckans tre största fynd som hann säljas, i #sålda-fynd."""
         since = int(now.timestamp()) - 7 * 86400
@@ -4216,6 +4360,14 @@ class Bot:
             tip = RESELL_TIPS[now.toordinal() % len(RESELL_TIPS)]
             if self.discord_post("tips", Message("💡 Dagens resell-tips", [tip], "")):
                 done.append("tips")
+        if now.hour >= 8 and get("discord:vipcheck:last") != today:  # en gång per dag
+            put("discord:vipcheck:last", today)
+            if self.discord_vip_check():
+                done.append("VIP-kontroll")
+        if now.weekday() == 6 and now.hour >= 8 and get("discord:invboard:last") != today:
+            put("discord:invboard:last", today)
+            if self.discord_invite_board():
+                done.append("veckans inbjudare")
         hour = self.cfg.get("daily_summary_hour")
         hour = 20 if hour is None or hour is False else int(hour)
         if now.hour >= hour and get("discord:summary:last") != today:
@@ -4244,6 +4396,7 @@ class Bot:
             if now.weekday() == 6 and get("discord:week:last") != today and self.discord_week(now):
                 put("discord:week:last", today)
                 done.append("veckans bästa")
+
             for kind in ("pris", "legit"):
                 self.store.db.execute("DELETE FROM settings WHERE key LIKE ? AND key NOT LIKE ?",
                                       (f"discord:{kind}:%", f"discord:{kind}:{today}:%"))

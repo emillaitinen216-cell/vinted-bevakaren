@@ -17,9 +17,29 @@ from pathlib import Path
 
 import vinted_bot as vb
 
+VIEW = 1 << 10                     # se kanalen
 SEND = 1 << 11                     # skicka meddelanden
+HISTORY = 1 << 16                  # läsa äldre meddelanden
 THREADS = (1 << 35) | (1 << 38)    # skapa trådar och skriva i dem
 READ_ONLY = SEND | THREADS
+VIP_ROLE = "💎 VIP"
+
+# AutoMod: Discords inbyggda skydd mot spam och bedragare. (namn, regel)
+AUTOMOD = [
+    ("Spam", {"event_type": 1, "trigger_type": 3,
+              "actions": [{"type": 1, "metadata": {"custom_message": "Meddelandet stoppades som spam."}}]}),
+    ("Massnämningar", {"event_type": 1, "trigger_type": 5,
+                       "trigger_metadata": {"mention_total_limit": 5, "mention_raid_protection_enabled": True},
+                       "actions": [{"type": 1, "metadata": {"custom_message": "För många nämningar i ett meddelande."}}]}),
+    ("Bedrägerilänkar", {"event_type": 1, "trigger_type": 1,
+                         "trigger_metadata": {"keyword_filter": [
+                             "*free nitro*", "*gratis nitro*", "*discord.gift*", "*discordgift*", "*nitro-gift*",
+                             "*steamcommunity.com/gift*", "*steam-gift*", "*airdrop*", "*claim your prize*"]},
+                         "actions": [{"type": 1, "metadata": {
+                             "custom_message": "Meddelandet liknar ett känt bedrägeri och stoppades."}}]}),
+    ("Grova ord", {"event_type": 1, "trigger_type": 4, "trigger_metadata": {"presets": [2, 3]},
+                   "actions": [{"type": 1, "metadata": {"custom_message": "Håll god ton i servern."}}]}),
+]
 
 
 def vip_text(link: str) -> str:
@@ -125,6 +145,22 @@ def layout(link: str) -> list[tuple[str, list[tuple[str, str, bool, str]]]]:
                 "Dela det du lärt dig: bra märken, prissättning, bilder, frakt och säsonger.",
             ])),
         ]),
+        ("💎 VIP", [
+            ("verifiera", "VIP i Telegram? Koppla ditt Discord-konto här", False, "\n".join([
+                "💎 **Är du VIP i Telegram-gruppen?**",
+                "",
+                "1. Skriv **/discord** privat till Telegram-boten.",
+                "2. Klistra in koden du får (t.ex. `DC-K7Q2MX`) här.",
+                "3. Du får rollen **💎 VIP** och tillgång till <#vip-snack>.",
+                "",
+                "Koden tas bort direkt efter att du skickat den. Inte VIP än? Se <#vip-telegram>.",
+            ])),
+            ("vip-snack", "Bara för VIP-medlemmar", "vip", "\n".join([
+                "💎 **Välkommen till VIP-snacket!**",
+                "",
+                "Här pratar VIP-medlemmarna fynd, strategier och vad som säljer just nu.",
+            ])),
+        ]),
     ]
 
 
@@ -142,6 +178,11 @@ def build(token: str, guild_id: str | None, link: str, api=vb.discord_api, pause
         if len(guilds) != 1:
             raise SystemExit(f"Boten är med i {len(guilds)} servrar – sätt DISCORD_GUILD_ID till rätt server.")
         guild_id = str(guilds[0]["id"])
+    roles = {r.get("name"): str(r["id"]) for r in api(token, "GET", f"/guilds/{guild_id}/roles") or []}
+    if VIP_ROLE not in roles:  # guldfärgad, och visas för sig i medlemslistan
+        roles[VIP_ROLE] = str(api(token, "POST", f"/guilds/{guild_id}/roles",
+                                  {"name": VIP_ROLE, "color": 0xF1C40F, "hoist": True, "mentionable": False})["id"])
+        print("Skapade rollen 💎 VIP.")
     existing = api(token, "GET", f"/guilds/{guild_id}/channels") or []
     categories = {c["name"]: str(c["id"]) for c in existing if c.get("type") == 4}
     channels = {c["name"]: str(c["id"]) for c in existing if c.get("type") == 0}
@@ -155,7 +196,11 @@ def build(token: str, guild_id: str | None, link: str, api=vb.discord_api, pause
             if name in channels:
                 continue
             payload = {"name": name, "type": 0, "parent_id": categories[category], "topic": topic}
-            if read_only:  # @everyone-rollen har samma id som servern
+            if read_only == "vip":  # dold för alla utom VIP-rollen
+                payload["permission_overwrites"] = [
+                    {"id": guild_id, "type": 0, "deny": str(VIEW)},
+                    {"id": roles[VIP_ROLE], "type": 0, "allow": str(VIEW | SEND | HISTORY)}]
+            elif read_only:  # @everyone-rollen har samma id som servern
                 payload["permission_overwrites"] = [{"id": guild_id, "type": 0, "deny": str(READ_ONLY)}]
             channels[name] = str(api(token, "POST", f"/guilds/{guild_id}/channels", payload)["id"])
             created.append(name)
@@ -170,6 +215,14 @@ def build(token: str, guild_id: str | None, link: str, api=vb.discord_api, pause
             api(token, "PUT", f"/channels/{channels[name]}/pins/{msg['id']}")
         except vb.NotifyError:
             pass  # fästa är bara en bonus
+    try:  # AutoMod – skydd mot spam och bedragare
+        rules = {r.get("name") for r in api(token, "GET", f"/guilds/{guild_id}/auto-moderation/rules") or []}
+        for name, rule in AUTOMOD:
+            if name not in rules:
+                api(token, "POST", f"/guilds/{guild_id}/auto-moderation/rules", {"name": name, "enabled": True, **rule})
+                print(f"Slog på AutoMod: {name}.")
+    except vb.NotifyError as e:  # t.ex. om Discord ändrat reglerna – kanalerna är ändå klara
+        print(f"Kunde inte slå på AutoMod (Discord svarade {e.status}) – gör det under Serverinställningar › AutoMod.")
     return created
 
 
