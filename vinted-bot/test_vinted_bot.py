@@ -2997,14 +2997,15 @@ class DiscordSetupTests(unittest.TestCase):
         import discord_setup
         api, calls = self.fake_discord()
         created = discord_setup.build("tok", None, "https://t.me/+ansok", api=api, pause=0)
-        self.assertEqual(created, ["välkommen", "regler", "vip-telegram", "sålda-fynd", "snack", "prischeck", "bjud-in", "legit-check",
+        self.assertEqual(created, ["välkommen", "regler", "vip-telegram", "välj-roller", "sålda-fynd", "snack", "prischeck", "bjud-in", "legit-check",
                                    "mina-vinster", "köp-sälj-byt", "tips", "verifiera", "vip-fynd", "vip-säljhjälp", "vip-snack"])
         made = {p["name"]: p for m, path, p in calls if m == "POST" and path.endswith("/channels")}
         self.assertEqual(made["regler"]["permission_overwrites"],
                          [{"id": "9", "type": 0, "deny": str(discord_setup.READ_ONLY)}])
         self.assertNotIn("permission_overwrites", made["snack"])
-        vip_role = next(p for m, path, p in calls if path == "/guilds/9/roles" and m == "POST")
-        self.assertEqual(vip_role["name"], "💎 VIP")
+        made_roles = [p["name"] for m, path, p in calls if path == "/guilds/9/roles" and m == "POST"]
+        self.assertIn("💎 VIP", made_roles)
+        self.assertIn("🎟️ Inbjudare", made_roles)
         hidden = made["vip-snack"]["permission_overwrites"]
         self.assertEqual(hidden[0], {"id": "9", "type": 0, "deny": str(discord_setup.VIEW)})
         live = made["vip-fynd"]["permission_overwrites"][1]                 # VIP ser men skriver inte
@@ -3016,7 +3017,8 @@ class DiscordSetupTests(unittest.TestCase):
         vip = next(t for t in posts if "VIP" in t)
         self.assertIn("https://t.me/+ansok", vip)
         self.assertNotIn("<#sålda-fynd>", vip)                              # blev en riktig kanallänk
-        self.assertEqual(len([c for c in calls if c[0] == "PUT"]), len(posts))  # alla texter fästs
+        self.assertEqual(len([c for c in calls if c[0] == "PUT" and "/pins/" in c[1]]), len(posts))  # alla fästs
+        self.assertEqual(len([c for c in calls if c[0] == "PUT" and "/reactions/" in c[1]]), len(vb.REACTION_ROLES))
         calls.clear()
         self.assertEqual(discord_setup.build("tok", None, "", api=api, pause=0), [])    # andra gången: inget nytt
         self.assertEqual([c for c in calls if c[0] != "GET"], [])
@@ -3048,24 +3050,75 @@ class DiscordSetupTests(unittest.TestCase):
                                       client=CatalogClient(items or []))
         return store, listener, inbox, calls
 
-    def test_vip_role_is_lifted_below_the_bot_and_made_gold(self):
+    def test_roles_are_created_ordered_below_the_bot_and_owner_gets_crown(self):
         import discord_setup
-        calls = []
-        roles = [{"id": "9", "name": "@everyone", "position": 0}, {"id": "500", "name": "💎 VIP", "position": 1,
-                 "color": 0, "hoist": False}, {"id": "600", "name": "Nivå 5", "position": 2},
-                 {"id": "700", "name": "Vinted-Bevakaren", "position": 4}]
+        calls, made = [], []
+        roles = [{"id": "9", "name": "@everyone", "position": 0},
+                 {"id": "500", "name": "💎 VIP", "position": 1, "color": 0, "hoist": False},
+                 {"id": "700", "name": "Vinted-Bevakaren", "position": 2}]
 
         def api(token, method, path, payload=None, timeout=20):
             calls.append((method, path, payload))
+            if path == "/guilds/9/roles" and method == "GET":
+                return roles
+            if path == "/guilds/9/roles" and method == "POST":
+                role = {"id": str(800 + len(made)), "position": 1, **payload}
+                made.append(role)
+                roles.insert(1, role)
+                for n, r in enumerate(roles):
+                    r["position"] = n
+                return role
             if path == "/users/@me":
                 return {"id": "42"}
             if path == "/guilds/9/members/42":
                 return {"roles": ["700"]}
+            if path == "/guilds/9":
+                return {"owner_id": "1"}
             return None
 
-        self.assertTrue(discord_setup.lift_vip_role("tok", "9", "500", roles, api))
+        ids = discord_setup.ensure_roles("tok", "9", api)
+        self.assertEqual(len(made), len(discord_setup.ROLES) - 1)              # VIP fanns redan
+        self.assertEqual(set(ids), {name for name, *_ in discord_setup.ROLES})
         self.assertIn(("PATCH", "/guilds/9/roles/500", {"color": 0xF1C40F, "hoist": True}), calls)
-        self.assertIn(("PATCH", "/guilds/9/roles", [{"id": "500", "position": 3}]), calls)
+        order = next(p for m, path, p in calls if m == "PATCH" and path == "/guilds/9/roles")
+        top = next(r["position"] for r in roles if r["id"] == "700")
+        self.assertEqual(order[0], {"id": ids["👑 Ägare"], "position": top - 1})
+        self.assertEqual(order[2], {"id": "500", "position": top - 3})       # VIP tredje uppifrån
+        self.assertIn(("PUT", f"/guilds/9/members/1/roles/{ids['👑 Ägare']}", None), calls)
+        moderator = next(r for r in made if r["name"] == "🛡️ Moderator")
+        self.assertEqual(moderator["permissions"], str(discord_setup.KICK | discord_setup.MANAGE_MESSAGES |
+                                                       discord_setup.MODERATE))
+
+    def test_reaction_roles_and_vip_nickname(self):
+        store, listener, inbox, calls = self.discord_listener([{"id": "90", "type": 0, "name": "välj-roller"}])
+        reactions = {"🌱": [{"id": "7"}, {"id": "42", "bot": True}], "👖": [{"id": "7"}, {"id": "8"}]}
+        real = listener.api
+
+        def discord(token, method, path, payload=None, timeout=20):
+            if path == "/channels/90/pins":
+                return [{"id": "91", "author": {"bot": True}}]
+            if path == "/guilds/9/roles":
+                return [{"id": str(600 + n), "name": name} for n, name in enumerate(vb.REACTION_ROLES.values())]
+            if "/reactions/" in path:
+                emoji = vb.urllib.parse.unquote(path.split("/reactions/")[1].split("?")[0])
+                return reactions.get(emoji, [])
+            if method in ("PUT", "DELETE", "PATCH"):
+                calls.append((method, path, payload))
+                return None
+            if path.startswith("/guilds/9/members/"):
+                return {"user": {"username": "gabbe", "global_name": "Gabbe"}, "nick": None}
+            return real(token, method, path, payload, timeout)
+
+        listener.api = discord
+        self.assertEqual(listener.sync_reaction_roles(store), 3)
+        self.assertIn(("PUT", "/guilds/9/members/7/roles/600", None), calls)    # 🌱 Nybörjare
+        self.assertIn(("PUT", "/guilds/9/members/8/roles/604", None), calls)    # 👖 Jeans
+        self.assertNotIn(("PUT", "/guilds/9/members/42/roles/600", None), calls)  # inte boten
+        reactions["👖"] = [{"id": "7"}]                                          # 8 tog bort sin reaktion
+        self.assertEqual(listener.sync_reaction_roles(store), 1)
+        self.assertIn(("DELETE", "/guilds/9/members/8/roles/604", None), calls)
+        self.assertTrue(vb.discord_set_vip_nick("tok", "9", "7", True, api=discord))
+        self.assertIn(("PATCH", "/guilds/9/members/7", {"nick": "💎 Gabbe"}), calls)
 
     def test_free_price_check_in_discord_with_daily_limit(self):
         items = [item(id=i, brand="Moncler", title="Moncler Maya", price=1000 * i) for i in range(1, 7)]

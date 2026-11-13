@@ -797,6 +797,12 @@ def discord_channel(token: str, name: str, guild_id: str | None = None, api=None
 
 
 DISCORD_VIP_ROLE = "💎 VIP"
+DISCORD_INVITER_ROLE = "🎟️ Inbjudare"
+# Roller man väljer själv genom att reagera i #välj-roller: emoji -> roll.
+REACTION_ROLES = {
+    "🌱": "🌱 Nybörjare", "🔁": "🔁 Reseller", "🏆": "🏆 Proffs",
+    "🧥": "🧥 Jackor & dun", "👖": "👖 Jeans", "👟": "👟 Skor", "⌚": "⌚ Accessoarer", "🔖": "🔖 Vintage",
+}
 
 
 def discord_guild(token: str, api=None) -> str | None:
@@ -812,6 +818,31 @@ def discord_role(token: str, guild: str, name: str = DISCORD_VIP_ROLE, api=None)
         if role.get("name") == name:
             return str(role["id"])
     return None
+
+
+VIP_PREFIX = "💎 "
+
+
+def discord_set_vip_nick(token: str, guild: str, user: str, vip: bool, api=None) -> bool:
+    """Lägger till (eller tar bort) 💎 framför namnet. Discord låter inte botar ändra ägarens namn – då False."""
+    api = api or discord_api
+    try:
+        member = api(token, "GET", f"/guilds/{guild}/members/{user}") or {}
+    except NotifyError:
+        return False
+    info = member.get("user") or {}
+    name = member.get("nick") or info.get("global_name") or info.get("username") or ""
+    has = name.startswith(VIP_PREFIX)
+    if not name or has == vip:
+        return False
+    new = (VIP_PREFIX + name)[:32] if vip else name[len(VIP_PREFIX):]
+    if not vip and new == (info.get("global_name") or info.get("username")):
+        new = None  # tillbaka till vanliga namnet
+    try:
+        api(token, "PATCH", f"/guilds/{guild}/members/{user}", {"nick": new})
+        return True
+    except NotifyError:
+        return False  # t.ex. serverns ägare, eller någon med högre roll än boten
 
 
 def invite_counts(store: "Store") -> dict[str, int]:
@@ -3626,9 +3657,11 @@ class DiscordListener:
         if not active:
             log.info("Discord: hittar varken #prischeck eller #legit-check – kör Bygg Discord-servern.")
             return False
-        if self.cfg.get("discord_referrals", True) and time.monotonic() >= self.next_invites:
+        if time.monotonic() >= self.next_invites:
             self.next_invites = time.monotonic() + self.INVITE_CHECK
-            self.check_invites(store)
+            if self.cfg.get("discord_referrals", True):
+                self.check_invites(store)
+            self.sync_reaction_roles(store)
         for role in active:
             channel = self.channels[role]
             key = f"discord:last:{role}"
@@ -3713,6 +3746,42 @@ class DiscordListener:
             "content": reply, "allowed_mentions": {"parse": []},
             "message_reference": {"message_id": str(message["id"]), "fail_if_not_exists": False}})
 
+    # ---- Roller man väljer själv i #välj-roller ----
+
+    def sync_reaction_roles(self, store: "Store") -> int:
+        """Ger rollen till dem som reagerat med emojin och tar bort den från dem som tagit bort sin reaktion."""
+        channel, guild = self.channel(store, "välj-roller"), self.guild()
+        if not channel or not guild:
+            return 0
+        pins = self.api(self.token, "GET", f"/channels/{channel}/pins") or []
+        message = next((m for m in pins if (m.get("author") or {}).get("bot")), None)
+        if not message:
+            return 0
+        role_ids = {r.get("name"): str(r["id"]) for r in self.api(self.token, "GET", f"/guilds/{guild}/roles") or []}
+        changes = 0
+        for emoji, name in REACTION_ROLES.items():
+            role = role_ids.get(name)
+            if not role:
+                continue
+            users = self.api(self.token, "GET", f"/channels/{channel}/messages/{message['id']}/reactions/"
+                                                f"{urllib.parse.quote(emoji)}?limit=100") or []
+            now = {str(u["id"]) for u in users if not u.get("bot")}
+            key = f"discord:react:{emoji}"
+            before = set(json.loads(store.get_setting(key) or "[]"))
+            for user in now - before:
+                self.api(self.token, "PUT", f"/guilds/{guild}/members/{user}/roles/{role}")
+                changes += 1
+            for user in before - now:
+                try:
+                    self.api(self.token, "DELETE", f"/guilds/{guild}/members/{user}/roles/{role}")
+                except NotifyError:
+                    pass  # personen har lämnat servern
+                changes += 1
+            store.set_setting(key, json.dumps(sorted(now)))
+        if changes:
+            log.info("Discord: uppdaterade %d valda roller.", changes)
+        return changes
+
     # ---- VIP-rollen: kod från /discord i Telegram ----
 
     def verify(self, message: dict, text: str, channel: str, store: "Store") -> None:
@@ -3727,6 +3796,7 @@ class DiscordListener:
         if code and role and store.claim_discord_link(code.group(0), user) is not None:
             store.set_setting("discord:vip_role", role)
             self.api(self.token, "PUT", f"/guilds/{guild}/members/{user}/roles/{role}")
+            discord_set_vip_nick(self.token, guild, user, True, api=self.api)
             reply = f"✅ <@{user}> är nu **💎 VIP**! Välkommen till VIP-snacket."
             log.info("Discord: en VIP-medlem kopplade sitt konto")
         elif not role:
@@ -3765,6 +3835,11 @@ class DiscordListener:
                 code = store.add_referral_code(inviter)
                 winners.append(inviter)
                 self.send_code(inviter, code)
+                if role := discord_role(self.token, guild, DISCORD_INVITER_ROLE, api=self.api):
+                    try:
+                        self.api(self.token, "PUT", f"/guilds/{guild}/members/{inviter}/roles/{role}")
+                    except NotifyError:
+                        pass
                 if channel := self.channels.get("bjud-in"):
                     self.api(self.token, "POST", f"/channels/{channel}/messages", {
                         "content": f"🎉 <@{inviter}> har bjudit in {self.REFERRALS} personer och får VIP för "
@@ -4380,6 +4455,7 @@ class Bot:
             if member_status_ok((info or {}).get("result") or {}):
                 try:  # ofarligt om rollen redan finns – rättar till om den försvunnit eller aldrig kom fram
                     discord_api(token, "PUT", f"/guilds/{guild}/members/{discord_user}/roles/{role}")
+                    discord_set_vip_nick(token, guild, discord_user, True)
                 except NotifyError as e:
                     log.warning("Discord: kunde inte ge VIP-rollen (Discord svarade %s)%s", e.status,
                                 " – flytta botens roll ovanför 💎 VIP under Serverinställningar › Roller"
@@ -4387,6 +4463,7 @@ class Bot:
                 continue
             try:
                 discord_api(token, "DELETE", f"/guilds/{guild}/members/{discord_user}/roles/{role}")
+                discord_set_vip_nick(token, guild, discord_user, False)
             except NotifyError as e:
                 if e.status != 404:  # 404: personen har lämnat Discord – ta bort kopplingen ändå
                     continue

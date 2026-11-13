@@ -13,6 +13,7 @@ import argparse
 import os
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 import vinted_bot as vb
@@ -22,7 +23,20 @@ SEND = 1 << 11                     # skicka meddelanden
 HISTORY = 1 << 16                  # läsa äldre meddelanden
 THREADS = (1 << 35) | (1 << 38)    # skapa trådar och skriva i dem
 READ_ONLY = SEND | THREADS
-VIP_ROLE = "💎 VIP"
+VIP_ROLE = vb.DISCORD_VIP_ROLE
+KICK, MANAGE_MESSAGES, MODERATE = 1 << 1, 1 << 13, 1 << 40
+# Serverns roller, högst upp först: (namn, färg, egen grupp i medlemslistan, rättigheter)
+ROLES = [
+    ("👑 Ägare", 0xE74C3C, True, 0),
+    ("🛡️ Moderator", 0x3498DB, True, KICK | MANAGE_MESSAGES | MODERATE),
+    (VIP_ROLE, 0xF1C40F, True, 0),
+    (vb.DISCORD_INVITER_ROLE, 0x9B59B6, False, 0),
+    ("✅ Legit-expert", 0x2ECC71, False, 0),
+    ("⭐ Pålitlig säljare", 0x1ABC9C, False, 0),
+    ("🏆 Proffs", 0xE67E22, False, 0),
+    ("🔁 Reseller", 0x95A5A6, False, 0),
+    ("🌱 Nybörjare", 0x7BC67B, False, 0),
+] + [(name, 0, False, 0) for name in list(vb.REACTION_ROLES.values())[3:]]
 
 # AutoMod: Discords inbyggda skydd mot spam och bedragare. (namn, regel)
 AUTOMOD = [
@@ -91,6 +105,10 @@ def layout(link: str) -> list[tuple[str, list[tuple[str, str, bool, str]]]]:
                 "Bryter du mot reglerna kan du bli utkastad.",
             ])),
             ("vip-telegram", "Fynden direkt i mobilen", True, vip_text(link)),
+            ("välj-roller", "Reagera för att få roller", True, "\n".join(
+                ["🎭 **Välj dina roller** – tryck på emojin under det här meddelandet:", ""]
+                + [f"{emoji} – {role.split(' ', 1)[1]}" for emoji, role in vb.REACTION_ROLES.items()]
+                + ["", "Tryck igen för att ta bort rollen. Det kan ta upp till några minuter innan den kommer."])),
         ]),
         ("🔥 FYND", [
             ("sålda-fynd", "Fynd som VIP-medlemmarna hann köpa", True, "\n".join([
@@ -192,14 +210,7 @@ def build(token: str, guild_id: str | None, link: str, api=vb.discord_api, pause
         if len(guilds) != 1:
             raise SystemExit(f"Boten är med i {len(guilds)} servrar – sätt DISCORD_GUILD_ID till rätt server.")
         guild_id = str(guilds[0]["id"])
-    all_roles = api(token, "GET", f"/guilds/{guild_id}/roles") or []
-    roles = {r.get("name"): str(r["id"]) for r in all_roles}
-    if VIP_ROLE not in roles:  # guldfärgad, och visas för sig i medlemslistan
-        roles[VIP_ROLE] = str(api(token, "POST", f"/guilds/{guild_id}/roles",
-                                  {"name": VIP_ROLE, "color": 0xF1C40F, "hoist": True, "mentionable": False})["id"])
-        print("Skapade rollen 💎 VIP.")
-    else:
-        lift_vip_role(token, guild_id, roles[VIP_ROLE], all_roles, api)
+    roles = ensure_roles(token, guild_id, api)
     existing = api(token, "GET", f"/guilds/{guild_id}/channels") or []
     categories = {c["name"]: str(c["id"]) for c in existing if c.get("type") == 4}
     channels = {c["name"]: str(c["id"]) for c in existing if c.get("type") == 0}
@@ -233,31 +244,55 @@ def build(token: str, guild_id: str | None, link: str, api=vb.discord_api, pause
             api(token, "PUT", f"/channels/{channels[name]}/pins/{msg['id']}")
         except vb.NotifyError:
             pass  # fästa är bara en bonus
+        if name == "välj-roller":  # boten reagerar först, så att man bara behöver trycka
+            for emoji in vb.REACTION_ROLES:
+                try:
+                    api(token, "PUT", f"/channels/{channels[name]}/messages/{msg['id']}/reactions/"
+                                      f"{urllib.parse.quote(emoji)}/@me")
+                except vb.NotifyError:
+                    pass
     automod(token, guild_id, api)
     return created
 
 
-def lift_vip_role(token: str, guild_id: str, role_id: str, all_roles: list[dict], api) -> bool:
-    """Guldfärg, egen grupp i medlemslistan och så högt det går (direkt under botens roll) – annars syns
-    färgen inte för den som också har en annan färgad roll högre upp."""
-    vip = next((r for r in all_roles if str(r["id"]) == role_id), {})
-    if vip.get("color") != 0xF1C40F or not vip.get("hoist"):
-        api(token, "PATCH", f"/guilds/{guild_id}/roles/{role_id}", {"color": 0xF1C40F, "hoist": True})
+def ensure_roles(token: str, guild_id: str, api) -> dict[str, str]:
+    """Skapar rollerna som saknas, ger dem rätt färg och lägger dem i ordning direkt under botens roll
+    (boten kan bara dela ut roller som ligger under dess egen). Ägaren får 👑 Ägare."""
+    all_roles = api(token, "GET", f"/guilds/{guild_id}/roles") or []
+    by_name = {r.get("name"): r for r in all_roles}
+    roles: dict[str, str] = {}
+    for name, color, hoist, perms in ROLES:
+        role = by_name.get(name)
+        if role is None:
+            role = api(token, "POST", f"/guilds/{guild_id}/roles",
+                       {"name": name, "color": color, "hoist": hoist, "permissions": str(perms), "mentionable": False})
+            print(f"Skapade rollen {name}.")
+        elif role.get("color") != color or bool(role.get("hoist")) != hoist:
+            api(token, "PATCH", f"/guilds/{guild_id}/roles/{role['id']}", {"color": color, "hoist": hoist})
+        roles[name] = str(role["id"])
     me = api(token, "GET", "/users/@me") or {}
     member = api(token, "GET", f"/guilds/{guild_id}/members/{me.get('id')}") or {}
     positions = {str(r["id"]): int(r.get("position") or 0) for r in all_roles}
     top = max((positions.get(str(r), 0) for r in member.get("roles") or []), default=0)
-    target = top - 1
-    if target < 1 or positions.get(role_id) == target:
-        return False
-    try:
-        api(token, "PATCH", f"/guilds/{guild_id}/roles", [{"id": role_id, "position": target}])
-        print("Flyttade upp rollen 💎 VIP så att guldfärgen syns.")
-        return True
-    except vb.NotifyError as e:
-        print(f"Kunde inte flytta rollen 💎 VIP (Discord svarade {e.status}) – dra den högt upp under "
-              "Serverinställningar › Roller.")
-        return False
+    if top > len(ROLES):
+        wanted = [{"id": roles[name], "position": top - 1 - n} for n, (name, *_) in enumerate(ROLES)]
+        if any(positions.get(w["id"]) != w["position"] for w in wanted):
+            try:
+                api(token, "PATCH", f"/guilds/{guild_id}/roles", wanted)
+                print("Ordnade rollerna under botens roll.")
+            except vb.NotifyError as e:
+                print(f"Kunde inte ordna rollerna (Discord svarade {e.status}) – dra botens roll högst upp under "
+                      "Serverinställningar › Roller och kör igen.")
+    else:
+        print("Botens roll ligger för långt ner – dra Vinted-Bevakaren högst upp under Serverinställningar › Roller "
+              "och kör Bygg Discord-servern igen.")
+    try:  # ägaren får 👑 Ägare
+        owner = (api(token, "GET", f"/guilds/{guild_id}") or {}).get("owner_id")
+        if owner:
+            api(token, "PUT", f"/guilds/{guild_id}/members/{owner}/roles/{roles['👑 Ägare']}")
+    except vb.NotifyError:
+        pass
+    return roles
 
 
 def automod(token: str, guild_id: str, api) -> list[str]:

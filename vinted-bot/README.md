@@ -431,6 +431,14 @@ ingen webhook. Boten gör då dessutom det här i Discord:
   - **#vip-säljhjälp:** klistra in en Vinted-länk och få en färdig annonstext med prisförslag.
   - **📈 Veckans marknadsrapport** i #vip-snack varje måndag: snabbast sålda märken, flest
     fynd, störst snittvinst, vad som ökar och vad som blir liggande.
+- **🎭 Roller:** Bygg Discord-servern skapar 👑 Ägare (ges till dig), 🛡️ Moderator (kan ta bort
+  meddelanden, ge timeout och kasta ut), 💎 VIP, 🎟️ Inbjudare (ges automatiskt vid 5
+  inbjudningar), ✅ Legit-expert och ⭐ Pålitlig säljare (delas ut av dig), samt rollerna man
+  väljer själv i #välj-roller genom att reagera: 🌱 Nybörjare, 🔁 Reseller, 🏆 Proffs, 🧥 Jackor &
+  dun, 👖 Jeans, 👟 Skor, ⌚ Accessoarer och 🔖 Vintage. Rollerna läggs i ordning direkt under
+  botens roll – botens roll måste ligga högst upp.
+- **💎 framför namnet:** VIP-medlemmar får 💎 före sitt namn i servern, och det tas bort om de
+  lämnar VIP. (Discord låter inte botar ändra serverägarens namn.)
 - **🛡️ AutoMod:** Bygg Discord-servern slår på Discords inbyggda skydd mot spam,
   massnämningar, kända bedrägerilänkar (t.ex. "free nitro") och grova ord.
 - **🏆 Veckans bästa fynd** i #sålda-fynd varje söndagskväll: veckans tre största fynd som hann säljas.
