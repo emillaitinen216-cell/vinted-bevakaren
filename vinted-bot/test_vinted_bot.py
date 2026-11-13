@@ -3048,6 +3048,25 @@ class DiscordSetupTests(unittest.TestCase):
                                       client=CatalogClient(items or []))
         return store, listener, inbox, calls
 
+    def test_vip_role_is_lifted_below_the_bot_and_made_gold(self):
+        import discord_setup
+        calls = []
+        roles = [{"id": "9", "name": "@everyone", "position": 0}, {"id": "500", "name": "💎 VIP", "position": 1,
+                 "color": 0, "hoist": False}, {"id": "600", "name": "Nivå 5", "position": 2},
+                 {"id": "700", "name": "Vinted-Bevakaren", "position": 4}]
+
+        def api(token, method, path, payload=None, timeout=20):
+            calls.append((method, path, payload))
+            if path == "/users/@me":
+                return {"id": "42"}
+            if path == "/guilds/9/members/42":
+                return {"roles": ["700"]}
+            return None
+
+        self.assertTrue(discord_setup.lift_vip_role("tok", "9", "500", roles, api))
+        self.assertIn(("PATCH", "/guilds/9/roles/500", {"color": 0xF1C40F, "hoist": True}), calls)
+        self.assertIn(("PATCH", "/guilds/9/roles", [{"id": "500", "position": 3}]), calls)
+
     def test_free_price_check_in_discord_with_daily_limit(self):
         items = [item(id=i, brand="Moncler", title="Moncler Maya", price=1000 * i) for i in range(1, 7)]
         store, listener, inbox, calls = self.discord_listener([{"id": "55", "type": 0, "name": "prischeck"}], items)

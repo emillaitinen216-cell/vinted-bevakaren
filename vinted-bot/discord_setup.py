@@ -192,11 +192,14 @@ def build(token: str, guild_id: str | None, link: str, api=vb.discord_api, pause
         if len(guilds) != 1:
             raise SystemExit(f"Boten är med i {len(guilds)} servrar – sätt DISCORD_GUILD_ID till rätt server.")
         guild_id = str(guilds[0]["id"])
-    roles = {r.get("name"): str(r["id"]) for r in api(token, "GET", f"/guilds/{guild_id}/roles") or []}
+    all_roles = api(token, "GET", f"/guilds/{guild_id}/roles") or []
+    roles = {r.get("name"): str(r["id"]) for r in all_roles}
     if VIP_ROLE not in roles:  # guldfärgad, och visas för sig i medlemslistan
         roles[VIP_ROLE] = str(api(token, "POST", f"/guilds/{guild_id}/roles",
                                   {"name": VIP_ROLE, "color": 0xF1C40F, "hoist": True, "mentionable": False})["id"])
         print("Skapade rollen 💎 VIP.")
+    else:
+        lift_vip_role(token, guild_id, roles[VIP_ROLE], all_roles, api)
     existing = api(token, "GET", f"/guilds/{guild_id}/channels") or []
     categories = {c["name"]: str(c["id"]) for c in existing if c.get("type") == 4}
     channels = {c["name"]: str(c["id"]) for c in existing if c.get("type") == 0}
@@ -232,6 +235,29 @@ def build(token: str, guild_id: str | None, link: str, api=vb.discord_api, pause
             pass  # fästa är bara en bonus
     automod(token, guild_id, api)
     return created
+
+
+def lift_vip_role(token: str, guild_id: str, role_id: str, all_roles: list[dict], api) -> bool:
+    """Guldfärg, egen grupp i medlemslistan och så högt det går (direkt under botens roll) – annars syns
+    färgen inte för den som också har en annan färgad roll högre upp."""
+    vip = next((r for r in all_roles if str(r["id"]) == role_id), {})
+    if vip.get("color") != 0xF1C40F or not vip.get("hoist"):
+        api(token, "PATCH", f"/guilds/{guild_id}/roles/{role_id}", {"color": 0xF1C40F, "hoist": True})
+    me = api(token, "GET", "/users/@me") or {}
+    member = api(token, "GET", f"/guilds/{guild_id}/members/{me.get('id')}") or {}
+    positions = {str(r["id"]): int(r.get("position") or 0) for r in all_roles}
+    top = max((positions.get(str(r), 0) for r in member.get("roles") or []), default=0)
+    target = top - 1
+    if target < 1 or positions.get(role_id) == target:
+        return False
+    try:
+        api(token, "PATCH", f"/guilds/{guild_id}/roles", [{"id": role_id, "position": target}])
+        print("Flyttade upp rollen 💎 VIP så att guldfärgen syns.")
+        return True
+    except vb.NotifyError as e:
+        print(f"Kunde inte flytta rollen 💎 VIP (Discord svarade {e.status}) – dra den högt upp under "
+              "Serverinställningar › Roller.")
+        return False
 
 
 def automod(token: str, guild_id: str, api) -> list[str]:
