@@ -425,6 +425,12 @@ ingen webhook. Boten gör då dessutom det här i Discord:
   koden (`DC-…`) i #verifiera. De får då rollen 💎 VIP (guld, visas för sig) och ser den
   dolda kanalen #vip-snack. Koden tas bort direkt. En gång per dag tas rollen bort från dem
   som inte längre är med i Telegram-gruppen.
+- **💎 VIP-förmåner i Discord** (bara för rollen 💎 VIP):
+  - **#vip-fynd:** alla fynd live, samma som i Telegram-gruppen.
+  - **Obegränsad** prischeck och legitcheck (gratismedlemmar har 3 per dag).
+  - **#vip-säljhjälp:** klistra in en Vinted-länk och få en färdig annonstext med prisförslag.
+  - **📈 Veckans marknadsrapport** i #vip-snack varje måndag: snabbast sålda märken, flest
+    fynd, störst snittvinst, vad som ökar och vad som blir liggande.
 - **🛡️ AutoMod:** Bygg Discord-servern slår på Discords inbyggda skydd mot spam,
   massnämningar, kända bedrägerilänkar (t.ex. "free nitro") och grova ord.
 - **🏆 Veckans bästa fynd** i #sålda-fynd varje söndagskväll: veckans tre största fynd som hann säljas.

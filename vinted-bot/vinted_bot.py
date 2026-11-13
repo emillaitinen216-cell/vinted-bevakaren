@@ -3576,6 +3576,7 @@ class DiscordListener:
         self.guild_id: str | None = None
         self.next_invites = 0.0
         self.join_link = ""  # ansökningslänken (/lank), läses från databasen
+        self.vip_cache: dict = {}
 
     def run(self, until: float | None = None) -> None:
         store = Store(self.db_path)  # egen anslutning, eftersom lyssnaren har en egen tråd
@@ -3620,7 +3621,8 @@ class DiscordListener:
 
     def poll(self, store: "Store") -> bool:
         """Svarar på nya meddelanden. False = boten har inga kanaler att lyssna på."""
-        active = [r for r in ("prischeck", "legit-check", "bjud-in", "verifiera", "welcome") if self.channel(store, r)]
+        active = [r for r in ("prischeck", "legit-check", "bjud-in", "verifiera", "vip-säljhjälp", "welcome")
+                  if self.channel(store, r)]
         if not active:
             log.info("Discord: hittar varken #prischeck eller #legit-check – kör Bygg Discord-servern.")
             return False
@@ -3667,6 +3669,49 @@ class DiscordListener:
             "content": "\n".join(lines), "allowed_mentions": {"users": [user]},
             "message_reference": {"message_id": str(message["id"]), "fail_if_not_exists": False}})
         log.info("Discord: hälsade en ny medlem välkommen")
+
+    def is_vip(self, store: "Store", user: str) -> bool:
+        """Har personen rollen 💎 VIP? (kollas högst var 10:e minut per person)"""
+        known, when = self.vip_cache.get(user, (False, -1e9))
+        if time.monotonic() - when < 600:
+            return known
+        guild = self.guild()
+        role = store.get_setting("discord:vip_role") or (discord_role(self.token, guild, api=self.api) if guild else None)
+        known = False
+        if guild and role:
+            store.set_setting("discord:vip_role", role)
+            try:
+                member = self.api(self.token, "GET", f"/guilds/{guild}/members/{user}") or {}
+                known = role in [str(r) for r in member.get("roles") or []]
+            except NotifyError:
+                known = False
+        self.vip_cache[user] = (known, time.monotonic())
+        return known
+
+    def sell_help(self, message: dict, text: str, channel: str, store: "Store") -> None:
+        """#vip-säljhjälp: Vinted-länk → färdig annonstext med prisförslag."""
+        user = str((message.get("author") or {}).get("id"))
+        item_id = item_id_in(text)
+        if not item_id:
+            reply = "Klistra in en Vinted-länk (vinted.se/items/…) så gör jag en annonstext."
+        else:
+            listing = None
+            if self.helper._budget(("sälj", user)):
+                try:
+                    body = self.helper.client.fetch_listing_page(item_id)
+                    listing = parse_listing(body, self.helper.client.base, item_id) if body else None
+                except FetchError:
+                    pass
+            info = store.deal_info(item_id)
+            if not listing and not info:
+                reply = "Hittade inte annonsen – den kan vara borttagen. Prova igen om en stund."
+            else:
+                msg = sell_text_message(listing, info, f"https://www.{self.cfg['domain']}/items/{item_id}")
+                text_lines = [line for line in msg.lines]
+                reply = "**📝 Säljtext** – kopiera och klistra in:\n```\n" + "\n".join(text_lines)[:1800] + "\n```"
+        self.api(self.token, "POST", f"/channels/{channel}/messages", {
+            "content": reply, "allowed_mentions": {"parse": []},
+            "message_reference": {"message_id": str(message["id"]), "fail_if_not_exists": False}})
 
     # ---- VIP-rollen: kod från /discord i Telegram ----
 
@@ -3764,6 +3809,9 @@ class DiscordListener:
         if role == "verifiera":
             self.verify(message, text, channel, store)
             return
+        if role == "vip-säljhjälp":
+            self.sell_help(message, text, channel, store)
+            return
         if role == "bjud-in":
             now = time.monotonic()
             if now - self.helper.last_by_user.get(("bjud-in", user), -1e9) >= 5:  # spamskydd
@@ -3775,15 +3823,17 @@ class DiscordListener:
             return  # vanligt snack eller bilder – det svarar medlemmarna på
         today = datetime.now(STOCKHOLM).date().isoformat()
         key = f"discord:{'legit' if item_id else 'pris'}:{today}:{user}"
-        used = int(store.get_setting(key) or 0)
+        vip = self.is_vip(store, user)
+        used = 0 if vip else int(store.get_setting(key) or 0)
         what = "legitcheckar" if item_id else "prischeckar"
         link = next((v for _, v in store.settings_starting_with("join:link:")), "")
-        vip = f"Obegränsat – och fynden direkt i mobilen – i VIP: <{link}>" if link else "Obegränsat i VIP."
+        upsell = f"Obegränsat – och fynden direkt i mobilen – i VIP: <{link}>" if link else "Obegränsat i VIP."
+        left_text = lambda n: "_♾️ Obegränsat för 💎 VIP_" if vip else f"_{self.PER_DAY - n} gratis kvar idag. {upsell}_"
         if used >= self.PER_DAY:
             if used > self.PER_DAY:
                 return  # redan tillsagd idag
             title, lines = ("🔍 Legitcheck" if item_id else "💰 Prischeck"), [
-                f"Du har använt dina {self.PER_DAY} gratis {what} idag – nya i morgon.", vip]
+                f"Du har använt dina {self.PER_DAY} gratis {what} idag – nya i morgon.", upsell]
             store.set_setting(key, str(used + 1))
         elif item_id:
             msg = self.helper.legit_message(item_id, user)
@@ -3791,16 +3841,18 @@ class DiscordListener:
                 return
             title, lines = msg.title, msg.lines + [f"🔗 <{msg.url}>"]
             used += 1
-            store.set_setting(key, str(used))
-            lines.append(f"_{self.PER_DAY - used} gratis kvar idag. {vip}_")
+            if not vip:
+                store.set_setting(key, str(used))
+            lines.append(left_text(used))
         else:
             title = "💰 Prischeck"
             lines, url = self.helper.price_lines(text, user,
                                                  "Skriv märke och modell, t.ex. Moncler Maya eller Stone Island tröja.")
             if url:
                 used += 1
-                store.set_setting(key, str(used))
-                lines = lines + [f"🔗 <{url}>", f"_{self.PER_DAY - used} gratis kvar idag. {vip}_"]
+                if not vip:
+                    store.set_setting(key, str(used))
+                lines = lines + [f"🔗 <{url}>", left_text(used)]
         self.api(self.token, "POST", f"/channels/{channel}/messages", {
             "content": (f"**{title}**\n" + "\n".join(lines))[:2000],
             "message_reference": {"message_id": str(message["id"]), "fail_if_not_exists": False},
@@ -3867,6 +3919,7 @@ class Bot:
         self._cycle_started, self._inspect_off = time.monotonic(), False  # för kopierisk-kollen
         self.spare_end: float | None = None  # i molnet: sök toppmärkena igen fram till dess (monotonic)
         self.cycle_blocked: bool | None = None  # spärrade Vinted det senaste varvet?
+        self._discord_missing: set[str] = set()  # Discord-kanaler som inte finns – leta inte vid varje fynd
 
     def _pause(self) -> None:
         low, high = self.cfg["delay_between_searches"]
@@ -3961,6 +4014,12 @@ class Bot:
         self.store.log_deal(deal)
         if (self.notifiers or self.queue_undelivered) and not self._deliver(msg):
             self.store.add_pending(msg)  # skickas igen nästa körning
+        if "vip-fynd" not in self._discord_missing:
+            try:  # VIP i Discord får fyndet direkt i #vip-fynd
+                if self.discord_post("vip-fynd", msg) is False and os.environ.get("DISCORD_BOT_TOKEN"):
+                    self._discord_missing.add("vip-fynd")  # ingen sådan kanal – leta inte vid varje fynd
+            except Exception as e:
+                log.warning("Discord: kunde inte skicka fyndet till #vip-fynd (%s)", type(e).__name__)
         try:
             self.notify_watchers(deal, msg)
         except Exception as e:  # bevakningarna får aldrig stoppa sökningarna
@@ -4327,6 +4386,47 @@ class Bot:
             log.info("Discord: tog bort VIP-rollen från %d som inte längre är med i Telegram-gruppen.", removed)
         return removed
 
+    def discord_market_report(self, now: datetime) -> bool:
+        """Måndagar i #vip-snack: veckans marknad bland fynden – vad som säljs snabbt, mest, bäst och vad som blir liggande."""
+        week_start = int(now.timestamp()) - 7 * 86400
+        this = self.store.deal_outcomes(week_start)
+        if len(this) < 3:
+            return False
+        brands: dict[str, dict] = {}
+        for _, brand, profit, status, sold_after in this:
+            b = brands.setdefault(brand or "Okänt", {"n": 0, "sold": [], "profit": 0.0})
+            b["n"] += 1
+            b["profit"] += float(profit or 0)
+            if status == "SÅLD" and sold_after:
+                b["sold"].append(sold_after)
+        prev = {brand or "Okänt": n for brand, n in self.store.db.execute(  # veckan innan
+            "SELECT brand, COUNT(DISTINCT item_id) FROM deals WHERE ts >= ? AND ts < ? GROUP BY brand",
+            (week_start - 7 * 86400, week_start))}
+
+        def median(values):
+            values = sorted(values)
+            return values[(len(values) - 1) // 2]
+
+        fast = sorted((median(b["sold"]), name) for name, b in brands.items() if len(b["sold"]) >= 2)[:3]
+        most = sorted(((b["n"], name) for name, b in brands.items()), reverse=True)[:3]
+        best = sorted(((b["profit"] / b["n"], name) for name, b in brands.items() if b["n"] >= 2), reverse=True)[:3]
+        slow = [name for name, b in brands.items() if b["n"] >= 3 and len(b["sold"]) / b["n"] < 0.3][:3]
+        rising = sorted(((b["n"] - prev.get(name, 0), name) for name, b in brands.items()), reverse=True)
+        lines = [f"Veckans {len(this)} fynd i siffror:", ""]
+        if fast:
+            lines += ["⚡ **Säljs snabbast** – köp direkt när de dyker upp"]
+            lines += [f"• {name} – hälften sålda {within(sec)}" for sec, name in fast] + [""]
+        if most:
+            lines += ["📦 **Flest fynd**"] + [f"• {name} – {n} st" for n, name in most] + [""]
+        if best:
+            lines += ["💰 **Störst snittvinst**"] + [f"• {name} – ≈ +{money(avg)} kr" for avg, name in best] + [""]
+        if rising and rising[0][0] >= 2 and prev:
+            lines += [f"📈 **Mer fynd än förra veckan:** {rising[0][1]} (+{rising[0][0]})", ""]
+        if slow:
+            lines += ["🐢 **Blir ofta liggande** – var försiktig: " + ", ".join(slow), ""]
+        lines.append("Gäller fynden boten hittat – inte hela Vinted.")
+        return self.discord_post("vip-snack", Message("📈 Veckans marknadsrapport", lines, ""))
+
     def discord_week(self, now: datetime) -> bool:
         """Söndagar: veckans tre största fynd som hann säljas, i #sålda-fynd."""
         since = int(now.timestamp()) - 7 * 86400
@@ -4364,6 +4464,10 @@ class Bot:
             put("discord:vipcheck:last", today)
             if self.discord_vip_check():
                 done.append("VIP-kontroll")
+        if now.weekday() == 0 and now.hour >= 8 and get("discord:market:last") != today:
+            put("discord:market:last", today)
+            if self.discord_market_report(now):
+                done.append("marknadsrapporten")
         if now.weekday() == 6 and now.hour >= 8 and get("discord:invboard:last") != today:
             put("discord:invboard:last", today)
             if self.discord_invite_board():

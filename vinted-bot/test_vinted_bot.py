@@ -2998,7 +2998,7 @@ class DiscordSetupTests(unittest.TestCase):
         api, calls = self.fake_discord()
         created = discord_setup.build("tok", None, "https://t.me/+ansok", api=api, pause=0)
         self.assertEqual(created, ["välkommen", "regler", "vip-telegram", "sålda-fynd", "snack", "prischeck", "bjud-in", "legit-check",
-                                   "mina-vinster", "köp-sälj-byt", "tips", "verifiera", "vip-snack"])
+                                   "mina-vinster", "köp-sälj-byt", "tips", "verifiera", "vip-fynd", "vip-säljhjälp", "vip-snack"])
         made = {p["name"]: p for m, path, p in calls if m == "POST" and path.endswith("/channels")}
         self.assertEqual(made["regler"]["permission_overwrites"],
                          [{"id": "9", "type": 0, "deny": str(discord_setup.READ_ONLY)}])
@@ -3007,6 +3007,9 @@ class DiscordSetupTests(unittest.TestCase):
         self.assertEqual(vip_role["name"], "💎 VIP")
         hidden = made["vip-snack"]["permission_overwrites"]
         self.assertEqual(hidden[0], {"id": "9", "type": 0, "deny": str(discord_setup.VIEW)})
+        live = made["vip-fynd"]["permission_overwrites"][1]                 # VIP ser men skriver inte
+        self.assertEqual((live["allow"], live["deny"]), (str(discord_setup.VIEW | discord_setup.HISTORY),
+                                                         str(discord_setup.READ_ONLY)))
         rules = [p["name"] for m, path, p in calls if path.endswith("/auto-moderation/rules") and m == "POST"]
         self.assertEqual(rules, ["Spam", "Massnämningar", "Bedrägerilänkar", "Grova ord"])
         posts = [p["content"] for m, path, p in calls if m == "POST" and path.endswith("/messages")]
@@ -3177,6 +3180,64 @@ class DiscordSetupTests(unittest.TestCase):
         self.assertTrue(board.startswith("🥇 <@7> – 5 nya\n🥈 <@8> – 2 nya"), board)
         store.set_setting("discord:invite:a", "7:6")                          # nästa vecka: bara det nya räknas
         self.assertEqual(json.loads(store.get_setting("discord:invites_snapshot")), {"7": 5, "8": 2})
+
+    def test_vip_gets_unlimited_checks_and_sell_help(self):
+        items = [item(id=i, brand="Moncler", title="Moncler Maya", price=1000 * i) for i in range(1, 7)]
+        store, listener, inbox, calls = self.discord_listener(
+            [{"id": "55", "type": 0, "name": "prischeck"}, {"id": "56", "type": 0, "name": "vip-säljhjälp"}], items)
+        store.set_setting("discord:vip_role", "500")
+        real = listener.api
+
+        def discord(token, method, path, payload=None, timeout=20):
+            if path.startswith("/guilds/9/members/"):
+                return {"roles": ["500"] if path.endswith("/7") else []}
+            return real(token, method, path, payload, timeout)
+
+        listener.api = discord
+        listener.poll(store)                                                 # första gången
+        listener.next_invites = 1e18
+        for n in range(5):
+            listener.helper.last_by_user.clear()
+            inbox["55"] = [[{"id": str(100 + n), "content": "Moncler Maya", "author": {"id": "7"}}]]
+            listener.poll(store)
+        answers = [p["content"] for m, path, p in calls if m == "POST" and path == "/channels/55/messages"]
+        self.assertEqual(len(answers), 5)                                    # ingen gräns för VIP
+        self.assertTrue(all("♾️ Obegränsat för 💎 VIP" in a for a in answers))
+        listener.helper.client = FakeListingClient(listing_page(price="900"))
+        inbox["56"] = [[{"id": "300", "content": "https://www.vinted.se/items/42424242-maya", "author": {"id": "7"}}]]
+        listener.poll(store)
+        sell = [p["content"] for m, path, p in calls if m == "POST" and path == "/channels/56/messages"][-1]
+        self.assertIn("📝 Säljtext", sell)
+        self.assertIn("Titel:", sell)
+
+    def test_live_deals_and_monday_market_report(self):
+        store, _ = self.store()
+        api, calls = self.fake_discord([{"id": "60", "type": 0, "name": "vip-fynd"},
+                                        {"id": "61", "type": 0, "name": "vip-snack"}])
+        cfg = make_cfg()
+        bot = vb.Bot(cfg, [], FakeClient(), store, [])
+        deal = vb.Deal(item(id=5, brand="Moncler", title="Moncler Maya"), "Moncler", resale=2000, cost=900, profit=1100, roi=1.2)
+        with mock.patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "tok"}), mock.patch.object(vb, "discord_api", api), \
+                mock.patch.object(vb, "QUIET", True):
+            bot.notify(deal)
+        live = [p for m, path, p in calls if path == "/channels/60/messages"][0]["embeds"][0]
+        self.assertIn("Moncler", live["title"])
+        monday = datetime(2026, 11, 16, 9, tzinfo=vb.STOCKHOLM)
+        ts = int(monday.timestamp()) - 86400
+        rows = [("Moncler", 1100, 240), ("Moncler", 900, 600), ("Moncler", 800, None), ("Diesel", 200, None),
+                ("Diesel", 150, None), ("Diesel", 180, None)]
+        for i, (brand, profit, sold) in enumerate(rows, 10):
+            store.db.execute("INSERT INTO deals VALUES (?,?,?,?,?,?,?,?,?,?)", (i, ts, "S", brand, brand, 500, 550, 2000, profit, "u"))
+            store.record_sent("-1001", i, i, "photo", "x", "u")
+            if sold:
+                store.db.execute("UPDATE sent SET status = 'SÅLD', sold_after = ? WHERE item_id = ?", (sold, i))
+        with mock.patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "tok"}), mock.patch.object(vb, "discord_api", api), \
+                self.assertLogs("vinted-bot", "INFO"):
+            self.assertIn("marknadsrapporten", bot.discord_daily(monday))
+        report = [p for m, path, p in calls if path == "/channels/61/messages"][0]["embeds"][0]
+        self.assertEqual(report["title"], "📈 Veckans marknadsrapport")
+        self.assertIn("• Moncler – hälften sålda inom 5 min", report["description"])
+        self.assertIn("Blir ofta liggande** – var försiktig: Diesel", report["description"])
 
     def test_warns_once_when_message_content_is_missing(self):
         store, listener, inbox, calls = self.discord_listener([{"id": "55", "type": 0, "name": "prischeck"}])

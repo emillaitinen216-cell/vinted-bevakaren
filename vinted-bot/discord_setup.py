@@ -155,6 +155,20 @@ def layout(link: str) -> list[tuple[str, list[tuple[str, str, bool, str]]]]:
                 "",
                 "Koden tas bort direkt efter att du skickat den. Inte VIP än? Se <#vip-telegram>.",
             ])),
+            ("vip-fynd", "Fynden live – samma som i Telegram-gruppen", "vip-ro", "\n".join([
+                "🔥 **VIP-fynd**",
+                "",
+                "Här kommer fynden direkt när boten hittar dem – med pris, uppskattad vinst och kopierisk. "
+                "Slå på aviseringar för kanalen (klockan uppe till höger) så missar du inget.",
+            ])),
+            ("vip-säljhjälp", "Klistra in en Vinted-länk – få en färdig annonstext", "vip", "\n".join([
+                "📝 **Säljhjälp**",
+                "",
+                "Klistra in länken till plagget du köpt, så gör boten en färdig annonstext med titel, beskrivning "
+                "och prisförslag. Ta egna bilder i dagsljus – kopiera inte säljarens.",
+                "",
+                "Prischeck och legitcheck är dessutom obegränsade för dig som är 💎 VIP.",
+            ])),
             ("vip-snack", "Bara för VIP-medlemmar", "vip", "\n".join([
                 "💎 **Välkommen till VIP-snacket!**",
                 "",
@@ -196,10 +210,11 @@ def build(token: str, guild_id: str | None, link: str, api=vb.discord_api, pause
             if name in channels:
                 continue
             payload = {"name": name, "type": 0, "parent_id": categories[category], "topic": topic}
-            if read_only == "vip":  # dold för alla utom VIP-rollen
-                payload["permission_overwrites"] = [
-                    {"id": guild_id, "type": 0, "deny": str(VIEW)},
-                    {"id": roles[VIP_ROLE], "type": 0, "allow": str(VIEW | SEND | HISTORY)}]
+            if read_only in ("vip", "vip-ro"):  # dold för alla utom VIP-rollen (vip-ro: bara läsa)
+                vip = {"id": roles[VIP_ROLE], "type": 0, "allow": str(VIEW | HISTORY | (SEND if read_only == "vip" else 0))}
+                if read_only == "vip-ro":
+                    vip["deny"] = str(READ_ONLY)
+                payload["permission_overwrites"] = [{"id": guild_id, "type": 0, "deny": str(VIEW)}, vip]
             elif read_only:  # @everyone-rollen har samma id som servern
                 payload["permission_overwrites"] = [{"id": guild_id, "type": 0, "deny": str(READ_ONLY)}]
             channels[name] = str(api(token, "POST", f"/guilds/{guild_id}/channels", payload)["id"])
