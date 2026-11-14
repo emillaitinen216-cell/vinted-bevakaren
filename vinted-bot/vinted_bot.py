@@ -1866,6 +1866,11 @@ class Store:
         self.db.execute("DELETE FROM discord_links WHERE telegram_user = ?", (telegram_user,))
         self.db.commit()
 
+    def has_own_data(self, user_id) -> bool:
+        """Har personen bevakningar eller följer annonser (sparade från när hen var med)?"""
+        return self.db.execute("SELECT 1 FROM watches WHERE user_id = ? UNION SELECT 1 FROM follows WHERE user_id = ? "
+                               "LIMIT 1", (user_id, user_id)).fetchone() is not None
+
     def members(self, chat_id: str) -> list[tuple[int, str]]:
         return self.db.execute("SELECT user_id, name FROM members WHERE chat_id = ? ORDER BY ts DESC", (chat_id,)).fetchall()
 
@@ -2728,6 +2733,7 @@ class LegitListener:
         self.last_command: dict = {}             # person -> senaste /bevaka m.fl. (spamskydd)
         self.admins: dict = {}                   # person -> (är admin i gruppen, när det kollades)
         self.clean_warned = False
+        self.locked_hint: dict = {}              # person -> när hen senast fick "Bara för medlemmar"
 
     def run(self, until: float | None = None) -> None:
         """Lyssnar tills time.monotonic() når until (None = för alltid)."""
@@ -2807,6 +2813,19 @@ class LegitListener:
     def allowed_chats(self, store: "Store") -> set[str]:
         key = telegram_chat_key(self.token)
         return {c for c in (self.fixed_chat, store.get_setting(key), store.get_setting(key + ":private")) if c}
+
+    def members_only(self, chat: str, user_id, store: "Store") -> None:
+        """Svar till den som inte är med i gruppen: boten är bara för medlemmar (högst en gång i minuten)."""
+        now = time.monotonic()
+        if now - self.locked_hint.get(user_id, -1e9) < 60:
+            return
+        self.locked_hint[user_id] = now
+        group = self.group_chat(store)
+        link = store.get_setting(f"join:link:{group}") if group else ""
+        self.send_html(chat, "\n".join(
+            ["<b>🔒 Bara för medlemmar</b>",
+             "Botens funktioner – fynd, bevakningar, prischeck och legitcheck – är bara för medlemmar i gruppen."]
+            + ([f"Ansök här: {escape(link, quote=False)}"] if link else [])))
 
     def group_chat(self, store: "Store") -> str | None:
         return next((str(c) for c in (self.fixed_chat, store.get_setting(telegram_chat_key(self.token)))
@@ -2897,7 +2916,7 @@ class LegitListener:
                     "Klistra in koden i kanalen <b>#verifiera</b> i vår Discord, så får du rollen 💎 VIP och "
                     "tillgång till #vip-snack. Koden fungerar för ett Discord-konto."]))
             else:
-                self.send_html(chat, "💎 /discord är för VIP-medlemmar i Telegram-gruppen.")
+                self.members_only(chat, user_id, store)
             return
         if command in ("/alla", "/everyone", "/all") and chat in allowed and chat.startswith("-"):
             self.tag_everyone(msg, chat, store, parts[1] if len(parts) > 1 else "")
@@ -2921,9 +2940,14 @@ class LegitListener:
             return
         if command == "/start" and (not private or chat in allowed):
             return  # ägarens /start sköts av discover_telegram_chat
-        own_only = private and command in ("/bevakningar", "/sluta", "/foljer", "/avfolj")  # rör bara personens egna bevakningar
-        if chat not in allowed and not own_only and not (private and self.is_member(store, user_id)):
-            return
+        if chat not in allowed and not (private and self.is_member(store, user_id)):
+            # Bara medlemmar får använda boten. Undantag: den som lämnat gruppen får städa bort sina gamla
+            # bevakningar och följningar (/bevakningar, /sluta, /foljer, /avfolj).
+            own_only = private and command in ("/bevakningar", "/sluta", "/foljer", "/avfolj")
+            if not (own_only and store.has_own_data(user_id)):
+                if private:
+                    self.members_only(chat, user_id, store)
+                return
         thread = _thread_of(msg)
         if not private and command in ("/bevaka", "/bevakningar", "/sluta", "/folj", "/foljer", "/avfolj"):
             now = time.monotonic()

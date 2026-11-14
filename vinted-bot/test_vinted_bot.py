@@ -2211,7 +2211,8 @@ class MoreGroupFeatureTests(unittest.TestCase):
         self.say(listener, 2, 99, "/bevaka Moncler", user=99, chat_type="private")
         self.say(listener, 3, 99, "/legit 42424242", user=99, chat_type="private")
         self.assertEqual(self.store.watches(99), [])
-        self.assertEqual([p["chat_id"] for _, p in self.sent], ["7"])          # bara svaret till medlemmen
+        self.assertEqual([p["chat_id"] for _, p in self.sent], ["7", "99"])    # främlingen får bara en hänvisning
+        self.assertIn("Bara för medlemmar", self.sent[-1][1]["text"])
         self.say(listener, 4, 7, "/start", user=7, chat_type="private")
         self.assertIn("/bevaka Moncler – alla Moncler-fynd", self.sent[-1][1]["text"])
 
@@ -2247,7 +2248,8 @@ class MoreGroupFeatureTests(unittest.TestCase):
         self.say(listener, 1, 7, "/bevaka Stone Island", chat_type="private")
         self.say(listener, 2, 7, "/sluta alla", chat_type="private")
         self.assertEqual(self.store.watches(7), [])
-        self.assertEqual(len(self.sent), 1)                     # bara svaret på /sluta
+        self.assertIn("Bara för medlemmar", self.sent[0][1]["text"])   # /bevaka: inte längre med
+        self.assertEqual(len(self.sent), 2)                     # sedan bara svaret på /sluta
 
     def test_start_button_does_not_move_the_deals(self):
         self.assertEqual(vb.telegram_events([tg_msg(1, 7, "/start bevaka", 7, 100)]), [])
@@ -2907,7 +2909,28 @@ class JoinRequestTests(unittest.TestCase):
         self.private(1, 7, "/discord")
         self.assertRegex(self.sent[-1][1]["text"], r"<code>DC-[A-Z2-9]{6}</code>")
         self.private(2, 8, "/discord")                                      # inte med i gruppen
-        self.assertIn("för VIP-medlemmar", self.sent[-1][1]["text"])
+        self.assertIn("Bara för medlemmar", self.sent[-1][1]["text"])
+
+    def test_applicants_and_outsiders_cannot_use_the_bot(self):
+        self.private(1, self.OWNER, "/lank")                                   # ansökningslänken finns
+        self.request(2)                                                          # 7 har ansökt
+        for n, text in enumerate(["/pris Moncler Maya", "/legit https://www.vinted.se/items/42424242",
+                                  "/bevaka Moncler", "/discord", "/topplista"], 10):
+            self.sent.clear()
+            self.private(n, 7, text)
+            self.assertIn("Skärmdump på betalningen", self.sent[-1][1]["text"])  # bara ansökan, inga funktioner
+        for n, text in enumerate(["/pris Moncler Maya", "/bevakningar", "/foljer", "/discord"], 20):
+            self.sent.clear()
+            self.private(n, 8, text)                                             # inte med, har inte ansökt
+            if n == 20:
+                self.assertIn("Bara för medlemmar", self.sent[-1][1]["text"])
+                self.assertIn("https://t.me/+ansok", self.sent[-1][1]["text"])
+            else:
+                self.assertEqual(self.sent, [])                                  # högst en hänvisning i minuten
+        self.store.add_watch(9, "moncler", [])                                   # har lämnat men har kvar en bevakning
+        self.sent.clear()
+        self.private(30, 9, "/bevakningar")
+        self.assertIn("Dina bevakningar", self.sent[-1][1]["text"])            # får städa bort den
 
     def test_only_the_owner_decides_and_decline_works(self):
         self.request()
